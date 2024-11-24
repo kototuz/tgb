@@ -139,7 +139,7 @@ bool bb_reserve(ByteBuffer *bb, size_t amount)
     if (amount <= bb->cap) return true;
     bb->data = realloc(bb->data, amount);
     if (bb->data == NULL) {
-        perror("ERROR: Could not allocate memory");
+        fputs("ERROR: Could not allocate memory\n", stderr);
         return false;
     }
 
@@ -199,7 +199,8 @@ bool next_field(String_View *source, Field *result)
     result->name.count -= source->count+2;
 
     result->value = *source;
-    if (*source->data == '{') {
+    switch (*source->data) {
+    case '{':;
         size_t depth = 1;
         sv_chop_left(source, 1);
         do {
@@ -209,8 +210,18 @@ bool next_field(String_View *source, Field *result)
             }
             sv_chop_left(source, 1);
         } while (depth != 0);
-    } else {
+        break;
+
+    case '"':
+        sv_chop_left(source, 1);
+        while (*source->data != '\"' || source->data[-1] == '\\') {
+            sv_chop_left(source, 1);
+        }
+        break;
+
+    default:
         sv_chop_left_while(source, is_not_field_end);
+        break;
     }
 
     result->value.count -= source->count;
@@ -272,7 +283,7 @@ size_t handle_data(char *buf, size_t is, size_t ni, void *something)
         if (sv_eq(field.name, (String_View)SV_STATIC("text"))) {
             field.value.data++;
             field.value.count -= 2;
-            init_msg_text(field.value);
+            if (!init_msg_text(field.value)) return 1;
             break;
         }
     }
