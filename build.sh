@@ -8,4 +8,4 @@ if [ "$1" = "" ]; then
     exit 1
 fi
 
-$CC $CFLAGS main.c -o tgb -lcurl -DBOT_TOKEN="\"$1\""
+$CC $CFLAGS main.c -o tgb.exe -lcurl -DBOT_TOKEN="\"$1\""
