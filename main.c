@@ -286,11 +286,15 @@ char *fieldobj_to_str(String_View name, Field f)
     return buf;
 }
 
-#define ANSWERS_COUNT (sizeof(answers)/sizeof(answers[0]))
+#define TRIGGERS_COUNT (sizeof(triggers)/sizeof(triggers[0]))
 static struct {
     WStr on_word;
     String_View answer;
-} answers[] = {
+} triggers[] = {
+    {
+        .on_word = WSTR_LIT(L"как"),
+        .answer  = SV_STATIC("Жопой об косяк"),
+    },
     {
         .on_word = WSTR_LIT(L"да"),
         .answer  = SV_STATIC("Пизда"),
@@ -335,9 +339,9 @@ bool wstr_eq_ignorecase(WStr wstr0, WStr wstr1)
 
 bool calc_answer(WStr word, String_View *result)
 {
-    for (size_t i = 0; i < ANSWERS_COUNT; i++) {
-        if (wstr_eq_ignorecase(word, answers[i].on_word)) {
-            *result = answers[i].answer;
+    for (size_t i = 0; i < TRIGGERS_COUNT; i++) {
+        if (wstr_eq_ignorecase(word, triggers[i].on_word)) {
+            *result = triggers[i].answer;
             return true;
         }
     }
