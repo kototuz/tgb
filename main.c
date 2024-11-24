@@ -1,5 +1,6 @@
 #include <stdio.h>
 #include <string.h>
+#include <wctype.h>
 #include <wchar.h>
 #include <locale.h>
 #include <assert.h>
@@ -15,6 +16,8 @@
 
 #define TG_HOSTNAME "api.telegram.org"
 
+#define INFO(fmt, ...) wprintf("[INFO]: "fmt, __VA_ARGS__)
+
 typedef struct {
     String_View name;
     String_View value;
@@ -25,11 +28,27 @@ typedef struct {
     char *data;
 } Str;
 
+typedef struct {
+    size_t count;
+    wchar_t *data;
+} WStr;
+
+#define WSTR_LIT(lit) { (sizeof(lit)/sizeof(wchar_t))-1, (lit) }
+#define WS_FMT "%.*ls"
+#define WS_ARG(ws) (ws).count, (ws).data
+
+typedef struct {
+    uint8_t *data;
+    size_t len;
+    size_t cap;
+} ByteBuffer;
+
 static struct {
     size_t id;
     String_View id_str;
     String_View chat_id;
-    String_View text;
+    ByteBuffer buffer;
+    WStr text;
 } received_message = {0};
 
 
@@ -57,29 +76,45 @@ size_t parse_hex(String_View text)
     return result;
 }
 
-void convert_unicode(Str *s)
+bool bytebuf_reserve(ByteBuffer *bb, size_t amount)
 {
-    size_t converted = 0;
-    for (size_t i = 0; i < s->count; i++) {
-        if (s->data[i] != '\\' || s->data[i+1] != 'u') {
-            s->data[converted] = s->data[i];
-            converted += 1;
-            continue;
-        }
-
-        // TODO: handling of the russian language is hardcoded
-        wchar_t wc = (wchar_t) parse_hex(sv_from_parts(&s->data[i+2], 4));
-        if (L'А' <= wc && wc <= L'Я') {
-            wc += 32;
-        }
-
-        wctomb(&s->data[converted], wc);
-
-        i += 5;
-        converted += 2;
+    if (bb->len+amount <= bb->cap) return true;
+    bb->data = realloc(bb->data, amount);
+    if (bb->data == NULL) {
+        perror("ERROR: Could not allocate memory");
+        return false;
     }
 
-    s->count = converted;
+    bb->cap = amount;
+
+    return true;
+}
+
+bool init_msg_text(String_View str)
+{
+    // allocating memory if it needs
+    // TODO: count `wchar_t` considering this sequences: `\u0425`
+    received_message.buffer.len = 0;
+    if (!bytebuf_reserve(&received_message.buffer, str.count*sizeof(wchar_t)))
+        return false;
+
+    /*INFO(L"Buffer: length=%zu, cap=%zu\n", received_message.buffer.len, received_message.buffer.cap);*/
+
+    // iterating over str converting ascii unicode sequences. Example: `\u0425` -> `Х`
+    WStr new_wstr = { 0, (wchar_t *) received_message.buffer.data };
+    for (size_t i = 0; i < str.count; i++, new_wstr.count++) {
+        if (str.data[i] != '\\' || str.data[i+1] != 'u') {
+            new_wstr.data[new_wstr.count] = str.data[i];
+            continue;
+        } else {
+            wchar_t wc = (wchar_t) parse_hex(sv_from_parts(&str.data[i+2], 4));
+            new_wstr.data[new_wstr.count] = wc;
+            i += 5;
+        }
+    }
+
+    received_message.text = new_wstr;
+    return true;
 }
 
 bool is_not_double_quote(char s) { return s != '\"'; }
@@ -111,7 +146,6 @@ bool next_field(String_View *source, Field *result)
 
     return true;
 }
-
 
 size_t handle_data(char *buf, size_t is, size_t ni, void *something)
 {
@@ -161,18 +195,53 @@ size_t handle_data(char *buf, size_t is, size_t ni, void *something)
 
     for (;;) {
         if (!next_field(&source, &field)) {
-            received_message.text = SV_NULL;
+            received_message.text = (WStr){0};
             break;
         } 
         if (sv_eq(field.name, (String_View)SV_STATIC("text"))) {
-            received_message.text.data = field.value.data+1;
-            received_message.text.count = field.value.count-2;
-            convert_unicode((Str *)&received_message.text);
+            field.value.data++;
+            field.value.count -= 2;
+            init_msg_text(field.value);
             break;
         }
     }
 
     return count;
+}
+
+bool next_word(wchar_t **text, wchar_t **result)
+{
+    wchar_t *new_text = *text;
+    do {
+        if (*new_text == '\0') return false;
+    } while (!iswalpha(*new_text++));
+
+    *result = new_text-1;
+    while (iswalpha(*new_text)) new_text++;
+    *new_text = '\0';
+
+    *text = new_text+1;
+    return true;
+}
+
+bool get_last_word(WStr text, WStr *result)
+{
+    if (text.count == 0) return false;
+
+    size_t i = text.count;
+    while (!iswalpha(text.data[--i])) {
+        if (&text.data[i] == text.data)
+            return false;
+    }
+
+    result->count = 1;
+    while (&text.data[--i] >= text.data &&
+           iswalpha(text.data[i])) {
+        result->count += 1;
+    }
+
+    result->data = &text.data[i+1];
+    return true;
 }
 
 char *field_to_str(Field field)
@@ -219,43 +288,55 @@ char *fieldobj_to_str(String_View name, Field f)
 
 #define ANSWERS_COUNT (sizeof(answers)/sizeof(answers[0]))
 static struct {
-    String_View on_text;
+    WStr on_word;
     String_View answer;
 } answers[] = {
     {
-        .on_text = SV_STATIC("да"),
+        .on_word = WSTR_LIT(L"да"),
         .answer  = SV_STATIC("Пизда"),
     },
     {
-        .on_text = SV_STATIC("нет"),
+        .on_word = WSTR_LIT(L"нет"),
         .answer  = SV_STATIC("Минет")
     },
     {
-        .on_text = SV_STATIC("чо?"),
+        .on_word = WSTR_LIT(L"чо"),
         .answer  = SV_STATIC("Хуй через плечо")
     },
     {
-        .on_text = SV_STATIC("алло"),
+        .on_word = WSTR_LIT(L"алло"),
         .answer  = SV_STATIC("Хуем по лбу не дало?")
     },
     {
-        .on_text = SV_STATIC("я"),
+        .on_word = WSTR_LIT(L"я"),
         .answer  = SV_STATIC("Головка от хуя")
     },
     {
-        .on_text = SV_STATIC("а?"),
+        .on_word = WSTR_LIT(L"а"),
         .answer  = SV_STATIC("Хуйна")
     },
     {
-        .on_text = SV_STATIC("ну"),
+        .on_word = WSTR_LIT(L"ну"),
         .answer  = SV_STATIC("Хуй гну")
     },
 };
 
-bool calc_answer(String_View s, String_View *result)
+bool wstr_eq_ignorecase(WStr wstr0, WStr wstr1)
+{
+    if (wstr0.count != wstr1.count) return false;
+    for (size_t i = 0; i < wstr0.count; i++) {
+        if (towlower(wstr0.data[i]) != towlower(wstr1.data[i])) {
+            return false;
+        }
+    }
+
+    return true;
+}
+
+bool calc_answer(WStr word, String_View *result)
 {
     for (size_t i = 0; i < ANSWERS_COUNT; i++) {
-        if (sv_eq(s, answers[i].on_text)) {
+        if (wstr_eq_ignorecase(word, answers[i].on_word)) {
             *result = answers[i].answer;
             return true;
         }
@@ -281,6 +362,23 @@ bool calc_answer(String_View s, String_View *result)
     fprintf(stderr, "ERROR: Building url: %s\n", curl_url_strerror(code)); \
     return 1;                                                              \
 }
+
+/*int main(void)*/
+/*{*/
+/*    setlocale(LC_ALL, "");*/
+/*    CURL *curl = curl_easy_init();*/
+/*    curl_easy_setopt(curl, CURLOPT_URL, "https://api.telegram.org/bot"BOT_TOKEN"/getUpdates?offset=-1&allowed_updates=[\"message\"]");*/
+/*    curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, handle_data);*/
+/*    curl_easy_perform(curl);*/
+/**/
+/*    INFO(L"Received message: [%.*ls]\n", received_message.text.count, received_message.text.data);*/
+/*    WStr word;*/
+/*    get_last_word(received_message.text, &word);*/
+/**/
+/*    INFO(L"Last word: [%.*ls]\n", word.count, word.data);*/
+/**/
+/*    return 0;*/
+/*}*/
 
 size_t empty_read(char *b, size_t s, size_t n, void *ud) {(void) b; (void) ud; return s*n; }
 int main(void)
@@ -318,10 +416,18 @@ int main(void)
         if (received_message.id <= last_msg_id) continue;
         last_msg_id = received_message.id;
 
-        printf("Received message: ["SV_Fmt"]\n", SV_Arg(received_message.text));
+        INFO(L"Received message: ["WS_FMT"]\n", WS_ARG(received_message.text));
+
+        WStr last_word;
+        if (!get_last_word(received_message.text, &last_word)) {
+            INFO(L"Message doesn't contain words%s", "");
+            continue;
+        }
+
+        INFO(L"Last word: ["WS_FMT"]\n", WS_ARG(last_word));
 
         String_View answer;
-        if (!calc_answer(received_message.text, &answer)) continue;
+        if (!calc_answer(last_word, &answer)) continue;
 
         char *new_text_field = field_to_str((Field) {
             .name = SV_STATIC("text"),
@@ -353,7 +459,7 @@ int main(void)
         curlu_err = curl_url_get(url, CURLUPART_URL, &data, 0);
         if (curlu_err != CURLUE_OK) CURLU_ERR(curlu_err);
 
-        printf("Sending message:  ["SV_Fmt"]\n", SV_Arg(answer));
+        INFO(L"Sending message:  ["SV_Fmt"]\n", SV_Arg(answer));
 
         curl_easy_setopt(output, CURLOPT_URL, data);
         curl_err = curl_easy_perform(output);
