@@ -54,7 +54,7 @@ typedef struct {
 } WStr;
 
 typedef struct {
-    uint8_t *data;
+    char *data;
     size_t len;
     size_t cap;
 } ByteBuffer;
@@ -133,9 +133,10 @@ size_t parse_hex(String_View text)
     return result;
 }
 
-bool bytebuf_reserve(ByteBuffer *bb, size_t amount)
+bool bb_reserve(ByteBuffer *bb, size_t amount)
 {
-    if (bb->len+amount <= bb->cap) return true;
+    amount += 1; // '\0' at the end
+    if (amount <= bb->cap) return true;
     bb->data = realloc(bb->data, amount);
     if (bb->data == NULL) {
         perror("ERROR: Could not allocate memory");
@@ -147,15 +148,28 @@ bool bytebuf_reserve(ByteBuffer *bb, size_t amount)
     return true;
 }
 
+void bb_append_byte(ByteBuffer *bb, char byte)
+{
+    assert(bb->len+1 < bb->cap);
+    bb->data[bb->len++] = byte;
+    bb->data[bb->len] = '\0';
+}
+
+void bb_append_slice(ByteBuffer *bb, const char *bytes, size_t count)
+{
+    assert(bb->len+count < bb->cap);
+    memcpy(&bb->data[bb->len], bytes, count);
+    bb->len += count;
+    bb->data[bb->len] = '\0';
+}
+
 bool init_msg_text(String_View str)
 {
     // allocating memory if it needs
     // TODO: count `wchar_t` considering this sequences: `\u0425`
     received_message.buffer.len = 0;
-    if (!bytebuf_reserve(&received_message.buffer, str.count*sizeof(wchar_t)))
+    if (!bb_reserve(&received_message.buffer, str.count*sizeof(wchar_t)))
         return false;
-
-    /*INFO(L"Buffer: length=%zu, cap=%zu\n", received_message.buffer.len, received_message.buffer.cap);*/
 
     // iterating over str converting ascii unicode sequences. Example: `\u0425` -> `Х`
     WStr new_wstr = { 0, (wchar_t *) received_message.buffer.data };
@@ -301,46 +315,39 @@ bool get_last_word(WStr text, WStr *result)
     return true;
 }
 
-char *field_to_str(Field field)
+bool field_to_str(ByteBuffer *bb, Field field)
 {
-    char *buf = (char *) malloc(field.name.count + 2 + field.value.count);
-    if (buf == NULL) {
-        perror("ERROR: Allocating memory");
-        return NULL;
-    }
+    // clean the buffer
+    bb->len = 0;
 
-    memcpy(buf, field.name.data, field.name.count);
-    buf[field.name.count] = '=';
-    memcpy(&buf[field.name.count+1], field.value.data, field.value.count);
-    buf[field.name.count+field.value.count+1] = '\0';
+    // allocating place
+    if (!bb_reserve(bb, field.name.count + 1 + field.value.count))
+        return false;
 
-    return buf;
+    bb_append_slice(bb,  field.name.data, field.name.count);
+    bb_append_byte(bb, '=');
+    bb_append_slice(bb,  field.value.data, field.value.count);
+
+    return true;
 }
 
-// TODO: field builder
-char *fieldobj_to_str(String_View name, Field f)
+bool fieldobj_to_str(ByteBuffer *bb, String_View name, Field f)
 {
-    size_t bufsize = name.count + 7 + f.name.count + f.value.count;
-    char *buf = (char *) malloc(bufsize);
-    if (buf == NULL) {
-        perror("ERROR: Allocating memory");
-        return NULL;
-    }
+    // clear the buffer
+    bb->len = 0;
 
-    memcpy(buf, name.data, name.count);
-    buf[name.count]   = '=';
-    buf[name.count+1] = '{';
-    buf[name.count+2] = '\"';
-    memcpy(&buf[name.count+3], f.name.data, f.name.count);
+    // allocating place
+    if (!bb_reserve(bb, name.count + 6 + f.name.count + f.value.count))
+        return false;
 
-    size_t idx = name.count+3+f.name.count;
-    buf[idx]   = '\"';
-    buf[idx+1] = ':';
-    memcpy(&buf[idx+2], f.value.data, f.value.count);
-    buf[idx+2+f.value.count] = '}';
-    buf[idx+3+f.value.count] = '\0';
+    bb_append_slice(bb, name.data, name.count);
+    bb_append_slice(bb, "={\"", 3);
+    bb_append_slice(bb, f.name.data, f.name.count);
+    bb_append_slice(bb, "\":", 2);
+    bb_append_slice(bb, f.value.data, f.value.count);
+    bb_append_byte(bb, '}');
 
-    return buf;
+    return true;
 }
 
 bool wstr_eq_ignorecase(WStr wstr0, WStr wstr1)
@@ -396,6 +403,8 @@ int main(void)
     curl_err = curl_easy_perform(input);
     if (curl_err != CURLE_OK) CURL_PERFORM_ERR(curl_err);
     size_t last_msg_id = received_message.id;
+
+    ByteBuffer reply_msg, chat_id, text = {0};
     for (;;) {
         curl_err = curl_easy_perform(input);
         if (curl_err != CURLE_OK) CURL_PERFORM_ERR(curl_err);
@@ -416,30 +425,29 @@ int main(void)
         String_View answer;
         if (!calc_answer(last_word, &answer)) continue;
 
-        char *new_text_field = field_to_str((Field) {
+        Field field = {
             .name = SV_STATIC("text"),
             .value = answer
-        });
-        if (new_text_field == NULL) return 1;
+        };
+        if (!field_to_str(&text, field)) return 1;
 
-        char *new_chatid_field = field_to_str((Field) {
+        field = (Field) {
             .name = SV_STATIC("chat_id"),
             .value = received_message.chat_id
-        });
-        if (new_text_field == NULL) return 1;
+        };
+        if (!field_to_str(&chat_id, field)) return 1;
 
-        char *new_reply_message_field = fieldobj_to_str((String_View)SV_STATIC("reply_parameters"), (Field) {
+        field = (Field) {
             .name = SV_STATIC("message_id"),
             .value = received_message.id_str
-        });
+        };
+        if (!fieldobj_to_str(&reply_msg, (String_View)SV_STATIC("reply_parameters"), field)) return 1;
 
-        if (new_text_field == NULL) return 1;
-
-        curlu_err = curl_url_set(url, CURLUPART_QUERY, new_text_field, CURLU_APPENDQUERY | CURLU_URLENCODE);
+        curlu_err = curl_url_set(url, CURLUPART_QUERY, text.data, CURLU_APPENDQUERY | CURLU_URLENCODE);
         if (curlu_err != CURLUE_OK) CURLU_ERR(curlu_err);
-        curlu_err = curl_url_set(url, CURLUPART_QUERY, new_chatid_field, CURLU_APPENDQUERY);
+        curlu_err = curl_url_set(url, CURLUPART_QUERY, chat_id.data, CURLU_APPENDQUERY);
         if (curlu_err != CURLUE_OK) CURLU_ERR(curlu_err);
-        curlu_err = curl_url_set(url, CURLUPART_QUERY, new_reply_message_field, CURLU_APPENDQUERY);
+        curlu_err = curl_url_set(url, CURLUPART_QUERY, reply_msg.data, CURLU_APPENDQUERY);
         if (curlu_err != CURLUE_OK) CURLU_ERR(curlu_err);
 
         char *data;
@@ -455,12 +463,12 @@ int main(void)
         curlu_err = curl_url_set(url, CURLUPART_QUERY, NULL, 0);
         if (curlu_err != CURLUE_OK) CURLU_ERR(curlu_err);
 
-        free(new_reply_message_field);
-        free(new_chatid_field);
-        free(new_text_field);
         curl_free(data);
     }
 
+    free(text.data);
+    free(chat_id.data);
+    free(reply_msg.data);
     curl_url_cleanup(url);
     curl_easy_cleanup(output);
     curl_easy_cleanup(input);
