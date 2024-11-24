@@ -14,9 +14,29 @@
  #error BOT_TOKEN is not specifed
 #endif
 
-#define TG_HOSTNAME "api.telegram.org"
-
 #define INFO(fmt, ...) wprintf("[INFO]: "fmt, __VA_ARGS__)
+
+#define CURL_INIT_ERR()                         \
+{                                               \
+    fputs("ERROR: Creating `curl`\n", stderr);  \
+    return 1;                                   \
+}
+
+#define CURL_PERFORM_ERR(code)                                                  \
+{                                                                               \
+    fprintf(stderr, "ERROR: Sending request: %s\n", curl_easy_strerror(code));  \
+    return 1;                                                                   \
+}
+
+#define CURLU_ERR(code)                                                    \
+{                                                                          \
+    fprintf(stderr, "ERROR: Building url: %s\n", curl_url_strerror(code)); \
+    return 1;                                                              \
+}
+
+#define WS_LIT(lit) { (sizeof(lit)/sizeof(wchar_t))-1, (lit) }
+#define WS_FMT "%.*ls"
+#define WS_ARG(ws) (ws).count, (ws).data
 
 typedef struct {
     String_View name;
@@ -33,15 +53,13 @@ typedef struct {
     wchar_t *data;
 } WStr;
 
-#define WSTR_LIT(lit) { (sizeof(lit)/sizeof(wchar_t))-1, (lit) }
-#define WS_FMT "%.*ls"
-#define WS_ARG(ws) (ws).count, (ws).data
-
 typedef struct {
     uint8_t *data;
     size_t len;
     size_t cap;
 } ByteBuffer;
+
+
 
 static struct {
     size_t id;
@@ -50,6 +68,45 @@ static struct {
     ByteBuffer buffer;
     WStr text;
 } received_message = {0};
+
+#define TRIGGERS_COUNT (sizeof(triggers)/sizeof(triggers[0]))
+static struct {
+    WStr on_word;
+    String_View answer;
+} triggers[] = {
+    {
+        .on_word = WS_LIT(L"как"),
+        .answer  = SV_STATIC("Жопой об косяк"),
+    },
+    {
+        .on_word = WS_LIT(L"да"),
+        .answer  = SV_STATIC("Пизда"),
+    },
+    {
+        .on_word = WS_LIT(L"нет"),
+        .answer  = SV_STATIC("Минет")
+    },
+    {
+        .on_word = WS_LIT(L"чо"),
+        .answer  = SV_STATIC("Хуй через плечо")
+    },
+    {
+        .on_word = WS_LIT(L"алло"),
+        .answer  = SV_STATIC("Хуем по лбу не дало?")
+    },
+    {
+        .on_word = WS_LIT(L"я"),
+        .answer  = SV_STATIC("Головка от хуя")
+    },
+    {
+        .on_word = WS_LIT(L"а"),
+        .answer  = SV_STATIC("Хуйна")
+    },
+    {
+        .on_word = WS_LIT(L"ну"),
+        .answer  = SV_STATIC("Хуй гну")
+    },
+};
 
 
 
@@ -286,45 +343,6 @@ char *fieldobj_to_str(String_View name, Field f)
     return buf;
 }
 
-#define TRIGGERS_COUNT (sizeof(triggers)/sizeof(triggers[0]))
-static struct {
-    WStr on_word;
-    String_View answer;
-} triggers[] = {
-    {
-        .on_word = WSTR_LIT(L"как"),
-        .answer  = SV_STATIC("Жопой об косяк"),
-    },
-    {
-        .on_word = WSTR_LIT(L"да"),
-        .answer  = SV_STATIC("Пизда"),
-    },
-    {
-        .on_word = WSTR_LIT(L"нет"),
-        .answer  = SV_STATIC("Минет")
-    },
-    {
-        .on_word = WSTR_LIT(L"чо"),
-        .answer  = SV_STATIC("Хуй через плечо")
-    },
-    {
-        .on_word = WSTR_LIT(L"алло"),
-        .answer  = SV_STATIC("Хуем по лбу не дало?")
-    },
-    {
-        .on_word = WSTR_LIT(L"я"),
-        .answer  = SV_STATIC("Головка от хуя")
-    },
-    {
-        .on_word = WSTR_LIT(L"а"),
-        .answer  = SV_STATIC("Хуйна")
-    },
-    {
-        .on_word = WSTR_LIT(L"ну"),
-        .answer  = SV_STATIC("Хуй гну")
-    },
-};
-
 bool wstr_eq_ignorecase(WStr wstr0, WStr wstr1)
 {
     if (wstr0.count != wstr1.count) return false;
@@ -348,41 +366,6 @@ bool calc_answer(WStr word, String_View *result)
 
     return false;
 }
-
-#define CURL_INIT_ERR()                         \
-{                                               \
-    fputs("ERROR: Creating `curl`\n", stderr);  \
-    return 1;                                   \
-}
-
-#define CURL_PERFORM_ERR(code)                                                  \
-{                                                                               \
-    fprintf(stderr, "ERROR: Sending request: %s\n", curl_easy_strerror(code));  \
-    return 1;                                                                   \
-}
-
-#define CURLU_ERR(code)                                                    \
-{                                                                          \
-    fprintf(stderr, "ERROR: Building url: %s\n", curl_url_strerror(code)); \
-    return 1;                                                              \
-}
-
-/*int main(void)*/
-/*{*/
-/*    setlocale(LC_ALL, "");*/
-/*    CURL *curl = curl_easy_init();*/
-/*    curl_easy_setopt(curl, CURLOPT_URL, "https://api.telegram.org/bot"BOT_TOKEN"/getUpdates?offset=-1&allowed_updates=[\"message\"]");*/
-/*    curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, handle_data);*/
-/*    curl_easy_perform(curl);*/
-/**/
-/*    INFO(L"Received message: [%.*ls]\n", received_message.text.count, received_message.text.data);*/
-/*    WStr word;*/
-/*    get_last_word(received_message.text, &word);*/
-/**/
-/*    INFO(L"Last word: [%.*ls]\n", word.count, word.data);*/
-/**/
-/*    return 0;*/
-/*}*/
 
 size_t empty_read(char *b, size_t s, size_t n, void *ud) {(void) b; (void) ud; return s*n; }
 int main(void)
@@ -424,7 +407,7 @@ int main(void)
 
         WStr last_word;
         if (!get_last_word(received_message.text, &last_word)) {
-            INFO(L"Message doesn't contain words%s", "");
+            INFO(L"Message doesn't contain words%s\n", "");
             continue;
         }
 
