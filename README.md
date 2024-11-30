@@ -1,9 +1,9 @@
-# TeleGram Bot
+# TeleGram Bots
 
-A telegram bot for my own usage
+Telegram tools based on the telegram bot api
 
 ## Build
 
 ``` text
-$ ./build.sh <bot_token>
+$ ./build.sh <tool_name> <bot_token>
 ```
