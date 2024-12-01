@@ -17,7 +17,7 @@ fi
 
 case "$1" in
     "tpilot")
-        $CC $CFLAGS -I./external/ tpilot/main.c -o bin/tpilot.exe -L./external/raylib-5.5/src/ -lraylib -lm -DBOT_TOKEN="\"$2\""
+        $CC $CFLAGS -I./external/ tpilot/main.c -o bin/tpilot.exe -L./external/raylib-5.5/src/ -lraylib -lcurl -lm -DBOT_TOKEN="\"$2\""
         ;;
 
     "troll")
