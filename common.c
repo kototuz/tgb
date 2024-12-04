@@ -109,28 +109,22 @@ void bb_append_slice(ByteBuffer *bb, const char *bytes, size_t count)
     bb->data[bb->len] = '\0';
 }
 
-bool init_msg_text(String_View str)
+bool ascii_unicode_seq_to_utf8(ByteBuffer *bb, String_View str, WStr *result)
 {
-    // allocating memory if it needs
-    // TODO: count `wchar_t` considering this sequences: `\u0425`
-    received_message.buffer.len = 0;
-    if (!bb_reserve(&received_message.buffer, str.count*sizeof(wchar_t)))
-        return false;
+    if (!bb_reserve(bb, str.count*sizeof(wchar_t))) return false;
 
-    // iterating over str converting ascii unicode sequences. Example: `\u0425` -> `Х`
-    WStr new_wstr = { 0, (wchar_t *) received_message.buffer.data };
-    for (size_t i = 0; i < str.count; i++, new_wstr.count++) {
+    result->count = 0;
+    result->data = (wchar_t *) bb->data;
+    for (size_t i = 0; i < str.count; i++, result->count++) {
         if (str.data[i] != '\\' || str.data[i+1] != 'u') {
-            new_wstr.data[new_wstr.count] = str.data[i];
-            continue;
+            result->data[result->count] = str.data[i];
         } else {
             wchar_t wc = (wchar_t) parse_hex(sv_from_parts(&str.data[i+2], 4));
-            new_wstr.data[new_wstr.count] = wc;
+            result->data[result->count] = wc;
             i += 5;
         }
     }
 
-    received_message.text = new_wstr;
     return true;
 }
 
@@ -163,6 +157,8 @@ bool next_field(String_View *source, Field *result)
         while (*source->data != '\"' || source->data[-1] == '\\') {
             sv_chop_left(source, 1);
         }
+        result->value.data += 1;
+        result->value.count -= 1;
         break;
 
     default:
@@ -227,9 +223,10 @@ size_t handle_data(char *buf, size_t is, size_t ni, void *something)
             break;
         } 
         if (sv_eq(field.name, (String_View)SV_STATIC("text"))) {
-            field.value.data++;
-            field.value.count -= 2;
-            if (!init_msg_text(field.value)) return 1;
+            if (!ascii_unicode_seq_to_utf8(
+                        &received_message.buffer,
+                        field.value,
+                        &received_message.text)) return 1;
             break;
         }
     }
