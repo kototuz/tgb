@@ -46,6 +46,22 @@ typedef struct {
     size_t cap;
 } ByteBuffer;
 
+typedef struct {
+    char *response;
+    size_t size;
+} Memory;
+
+typedef struct {
+    size_t id;
+    String_View id_str;
+
+    size_t chat_id;
+    String_View chat_id_str;
+
+    WStr text;
+    bool has_text;
+} TgMessage;
+
 
 
 static struct {
@@ -109,7 +125,7 @@ void bb_append_slice(ByteBuffer *bb, const char *bytes, size_t count)
     bb->data[bb->len] = '\0';
 }
 
-bool ascii_unicode_seq_to_utf8(ByteBuffer *bb, String_View str, WStr *result)
+bool asciiutf8_to_wstr(ByteBuffer *bb, String_View str, WStr *result)
 {
     if (!bb_reserve(bb, str.count*sizeof(wchar_t))) return false;
 
@@ -138,15 +154,26 @@ bool next_field(String_View *source, Field *result)
     sv_chop_by_delim(source, ':');
     result->name.count -= source->count+2;
 
+    size_t depth = 1;
     result->value = *source;
     switch (*source->data) {
     case '{':;
-        size_t depth = 1;
         sv_chop_left(source, 1);
         do {
             switch (*source->data) {
                 case '{': depth += 1; break;
                 case '}': depth -= 1; break;
+            }
+            sv_chop_left(source, 1);
+        } while (depth != 0);
+        break;
+
+    case '[':;
+        sv_chop_left(source, 1);
+        do {
+            switch (*source->data) {
+                case '[': depth += 1; break;
+                case ']': depth -= 1; break;
             }
             sv_chop_left(source, 1);
         } while (depth != 0);
@@ -167,6 +194,87 @@ bool next_field(String_View *source, Field *result)
     }
 
     result->value.count -= source->count;
+
+    return true;
+}
+
+bool skip_fields_until(
+        String_View *src,
+        String_View field_name,
+        Field *result)
+{
+    for (;;) {
+        if (!next_field(src, result)) return false;
+        if (sv_eq(result->name, field_name)) return true;
+    }
+}
+
+size_t write_cb(char *data, size_t size, size_t nmemb, void *clientp)
+{
+    size_t realsize = size * nmemb;
+    Memory *mem = (Memory *) clientp;
+ 
+    char *ptr = realloc(mem->response, mem->size + realsize + 1);
+    if(!ptr) return 0;  /* out of memory */
+ 
+    mem->response = ptr;
+    memcpy(&(mem->response[mem->size]), data, realsize);
+    mem->size += realsize;
+    mem->response[mem->size] = 0;
+ 
+    return realsize;
+}
+
+#define FIELD_FMT    "["SV_Fmt":"SV_Fmt"]"
+#define FIELD_ARG(f) SV_Arg(f.name), SV_Arg(f.value)
+bool parse_tg_response(ByteBuffer *bb, String_View src, TgMessage *result)
+{
+    // clear the buffer
+    bb->len = 0;
+
+    Field field = {0};
+
+    // check if the response is ok
+    assert(next_field(&src, &field));
+    assert(sv_eq(field.name, SV("ok")));
+    if (!sv_eq(field.value, SV("true"))) {
+        fprintf(stderr, "ERROR: TgMessage is not ok\n");
+        return false;
+    }
+
+    // get result of the response
+    assert(next_field(&src, &field));
+    assert(sv_eq(field.name, SV("result")));
+
+    src = field.value;
+    *result = (TgMessage){0};
+
+    // check if the result is not empty and skip 'update_id'
+    if (!next_field(&src, &field)) return true;
+
+    // check if the next field is 'message'
+    if (!next_field(&src, &field) || !sv_eq(field.name, SV("message")))
+        return true;
+
+
+    src = field.value;
+
+    // get 'id'
+    assert(next_field(&src, &field));
+    result->id_str = field.value;
+    result->id = parse_int(field.value);
+
+    // get 'chat_id'
+    assert(skip_fields_until(&src, SV("chat"), &field));
+    String_View src2 = field.value;
+    assert(next_field(&src2, &field));
+    result->chat_id_str = field.value;
+    result->chat_id = parse_int(field.value);
+
+    // get 'text'
+    if (!skip_fields_until(&src, SV("text"), &field)) return true;
+    if (!asciiutf8_to_wstr(bb, field.value, &result->text)) return false;
+    result->has_text = true;
 
     return true;
 }
@@ -223,7 +331,7 @@ size_t handle_data(char *buf, size_t is, size_t ni, void *something)
             break;
         } 
         if (sv_eq(field.name, (String_View)SV_STATIC("text"))) {
-            if (!ascii_unicode_seq_to_utf8(
+            if (!asciiutf8_to_wstr(
                         &received_message.buffer,
                         field.value,
                         &received_message.text)) return 1;

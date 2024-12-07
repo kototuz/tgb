@@ -33,15 +33,15 @@
 #endif // SVDEF
 
 typedef struct {
-    size_t count;
     const char *data;
+    size_t count;
 } String_View;
 
 #define SV(cstr_lit) sv_from_parts(cstr_lit, sizeof(cstr_lit) - 1)
 #define SV_STATIC(cstr_lit)   \
     {                         \
+        (cstr_lit),           \
         sizeof(cstr_lit) - 1, \
-        (cstr_lit)            \
     }
 
 #define SV_NULL sv_from_parts(NULL, 0)
