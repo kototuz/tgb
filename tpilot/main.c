@@ -11,6 +11,7 @@
 #include <wchar.h>
 #include <assert.h>
 #include <locale.h>
+#include <threads.h>
 
 #include <curl/curl.h>
 
@@ -243,56 +244,30 @@ void tpilot_render(Tpilot self)
     }
 }
 
-void tpilot_send_message(Tpilot *self, CURL *curl, CURLU *url, ByteBuffer *bb)
-{
-    // render message on client
-    tpilot_push_message(
-            self,
-            self->editor.text,
-            self->editor.text_len,
-            (AuthorName){ L"You", 3 });
-
-    // create query field 'text' with text form the editor
-    char *editor_text_as_utf8 = LoadUTF8(self->editor.text, self->editor.text_len);
-    if (!field_to_str(bb, (Field) {
-            .name = SV_STATIC("text"),
-            .value = sv_from_cstr(editor_text_as_utf8)})) exit(1);
-    UnloadUTF8(editor_text_as_utf8);
-
-
-    INFO(L"Sending: %s\n", bb->data);
-}
+cnd_t recv_msg_cnd;
+mtx_t recv_msg_mtx;
+TgMessage tg_msg = {0};
 
 size_t empty_read(char *b, size_t s, size_t n, void *ud) {(void) b; (void) ud; return s*n; }
-int main(int argc, char *argv[])
+int gui_thread(char *chat_id)
 {
-    if (argc != 2) {
-        fprintf(stderr, "usage: %s <chat_id>\n", argv[0]);
-        return 1;
-    }
-
-    setlocale(LC_ALL, "");
-
     CURLcode  curl_err;
     CURLUcode curlu_err;
-    CURLU *url;
-    CURL *input, *output;
-    size_t last_msg_id;
 
     // this message is necessary without it programm enter the 'ascii print system'
     // In short you cannot use print functions from <stdio> and <wchar.h> simultaneously
-    INFO(L"Hello from Tpilot :)%s\n", "");
+    wprintf(L"Hello, from tpilot\n");
 
-    { // init curl input and curl output
-        input = curl_easy_init();
-        if (input == NULL) CURL_INIT_ERR();
-        output = curl_easy_init();
-        if (output == NULL) CURL_INIT_ERR();
+    CURLU *url;
+    CURL *curl_sender;
+    {
+        curl_sender = curl_easy_init();
+        if (curl_sender == NULL) CURL_INIT_ERR();
 
         url = curl_url();
         if (url == NULL) {
             fputs("ERROR: Creating `url builder`\n", stderr);
-            return 1;
+            exit(1);
         }
 
         curlu_err = curl_url_set(
@@ -300,20 +275,14 @@ int main(int argc, char *argv[])
                 "https://api.telegram.org/bot"BOT_TOKEN"/sendMessage", 0);
         if (curlu_err != CURLUE_OK) CURLU_ERR(curlu_err);
 
-        curl_easy_setopt(input, CURLOPT_URL, "https://api.telegram.org/bot"BOT_TOKEN"/getUpdates?offset=-1&allowed_updates=[\"message\"]");
-        curl_easy_setopt(input, CURLOPT_WRITEFUNCTION, handle_data);
-        curl_easy_setopt(output, CURLOPT_VERBOSE, 0L);
-        curl_easy_setopt(output, CURLOPT_WRITEFUNCTION, empty_read);
-
-        // get last message id
-        curl_err = curl_easy_perform(input);
-        if (curl_err != CURLE_OK) CURL_PERFORM_ERR(curl_err);
-        last_msg_id = received_message.id;
+        curl_easy_setopt(curl_sender, CURLOPT_VERBOSE, 0L);
+        curl_easy_setopt(curl_sender, CURLOPT_WRITEFUNCTION, empty_read);
     }
 
     InitWindow(WIDTH, HEIGHT, "Tpilot");
 
-    ByteBuffer text_buffer, chat_id_buffer;
+    ByteBuffer text_buffer = {0};
+    ByteBuffer chat_id_buffer = {0};
     Tpilot tpilot = tpilot_new();
     while (!WindowShouldClose()) {
         int key = GetKeyPressed();
@@ -330,13 +299,14 @@ int main(int argc, char *argv[])
                 char *editor_text_as_utf8 = LoadUTF8(tpilot.editor.text, tpilot.editor.text_len);
                 if (!field_to_str(&text_buffer, (Field) {
                             .name = SV_STATIC("text"),
-                            .value = sv_from_cstr(editor_text_as_utf8)})) return 1;
+                            .value = sv_from_cstr(editor_text_as_utf8)})) exit(1);
                 UnloadUTF8(editor_text_as_utf8);
+
 
                 // create query field 'chat_id' with the argument from command line
                 if (!field_to_str(&chat_id_buffer, (Field){
                             .name = SV_STATIC("chat_id"),
-                            .value = sv_from_cstr(argv[1])})) return 1;
+                            .value = sv_from_cstr(chat_id)})) exit(1);
 
                 // append field 'chat_id' to url
                 curlu_err = curl_url_set(url, CURLUPART_QUERY, chat_id_buffer.data, CURLU_APPENDQUERY);
@@ -350,8 +320,8 @@ int main(int argc, char *argv[])
                 curlu_err = curl_url_get(url, CURLUPART_URL, &data, 0);
                 if (curlu_err != CURLUE_OK) CURLU_ERR(curlu_err);
 
-                curl_easy_setopt(output, CURLOPT_URL, data);
-                curl_err = curl_easy_perform(output);
+                curl_easy_setopt(curl_sender, CURLOPT_URL, data);
+                curl_err = curl_easy_perform(curl_sender);
                 if (curl_err != CURLE_OK) CURL_PERFORM_ERR(curl_err);
                 curl_free(data);
 
@@ -377,16 +347,20 @@ int main(int argc, char *argv[])
         }
 
         // handle input message if it appears
-        curl_err = curl_easy_perform(input);
-        if (curl_err != CURLE_OK) CURL_PERFORM_ERR(curl_err);
-        if (received_message.id > last_msg_id) {
-            last_msg_id = received_message.id;
-            INFO(L"Received message: ["WS_FMT"]\n", WS_ARG(received_message.text));
+        if (mtx_trylock(&recv_msg_mtx) == thrd_success) {
             tpilot_push_message(
                     &tpilot,
-                    received_message.text.data,
-                    received_message.text.count,
+                    tg_msg.text.data,
+                    tg_msg.text.count,
                     (AuthorName){ L"Anon", 4 });
+            if (cnd_signal(&recv_msg_cnd) != thrd_success) {
+                fprintf(stderr, "ERROR: Could not signal to a condition\n");
+                exit(1);
+            }
+            if (mtx_unlock(&recv_msg_mtx) != thrd_success) {
+                fprintf(stderr, "ERROR: Could not unlock a mutex\n");
+                exit(1);
+            }
         }
 
         BeginDrawing();
@@ -398,10 +372,78 @@ int main(int argc, char *argv[])
     // cleanup all related to 'curl'
     free(text_buffer.data);
     curl_url_cleanup(url);
-    curl_easy_cleanup(output);
-    curl_easy_cleanup(input);
+    curl_easy_cleanup(curl_sender);
 
-    return 0;
+    exit(0);
+}
+
+int main(int argc, char *argv[])
+{
+    setlocale(LC_ALL, "");
+    if (argc != 2) {
+        fprintf(stderr, "usage: %s <chat_id>\n", argv[0]);
+        return 1;
+    }
+
+    // create 'curl'
+    String_View resp_text = {0};
+    CURL *curl = curl_easy_init();
+    if (curl == NULL) CURL_INIT_ERR();
+    curl_easy_setopt(curl, CURLOPT_URL, "https://api.telegram.org/bot"BOT_TOKEN"/getUpdates?offset=-1&allowed_updates=[\"message\"]");
+    curl_easy_setopt(curl, CURLOPT_WRITEDATA, (void *) &resp_text);
+    curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, write_cb);
+
+    ByteBuffer bb = {0};
+
+    // get last message id
+    CURLcode err = curl_easy_perform(curl);
+    if (err != CURLE_OK) CURL_PERFORM_ERR(err);
+    if (!parse_tg_response(&bb, resp_text, &tg_msg)) return 1;
+    size_t last_msg_id = tg_msg.id;
+
+    // create a new mutex and lock it
+    if (mtx_init(&recv_msg_mtx, mtx_plain) != thrd_success) {
+        fprintf(stderr, "ERROR: Could not create a mutex\n");
+        return 1;
+    }
+    if (mtx_lock(&recv_msg_mtx) != thrd_success) {
+        fprintf(stderr, "ERROR: Could not lock the new mutex\n");
+        return 1;
+    }
+
+    // create a new condition
+    if (cnd_init(&recv_msg_cnd) != thrd_success) {
+        fprintf(stderr, "ERROR: Could not create a new condition\n");
+        return 1;
+    }
+
+    // create and run a new thread
+    thrd_t thread;
+    if (thrd_create(&thread, (int (*)(void*))gui_thread, argv[1]) != thrd_success) {
+        fprintf(stderr, "ERROR: Could not create a new thread\n");
+        return 1;
+    }
+
+    for (;;) {
+        resp_text = (String_View){0};
+        err = curl_easy_perform(curl);
+        if (err != CURLE_OK) CURL_PERFORM_ERR(err);
+        if (!parse_tg_response(&bb, resp_text, &tg_msg)) exit(1);
+        if (tg_msg.id > last_msg_id) {
+            last_msg_id = tg_msg.id;
+
+            wprintf(L"=============================\n");
+            wprintf(L"Message id: "SV_Fmt"\n", SV_Arg(tg_msg.id_str));
+            wprintf(L"Chat id:    "SV_Fmt"\n", SV_Arg(tg_msg.chat_id_str));
+            wprintf(L"Text:       "WS_FMT"\n", WS_ARG(tg_msg.text));
+            wprintf(L"=============================\n");
+
+            if (cnd_wait(&recv_msg_cnd, &recv_msg_mtx) != thrd_success) {
+                fprintf(stderr, "ERROR: Could not wait for the condition\n");
+                exit(1);
+            }
+        }
+    }
 }
 
 // TODO: the program is slow. Maybe something with memory allocating or it happens because one thread
