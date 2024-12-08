@@ -12,6 +12,7 @@
 #include <assert.h>
 #include <locale.h>
 #include <threads.h>
+#include <math.h>
 
 #include <curl/curl.h>
 
@@ -42,10 +43,23 @@
 
 #define MSG_DISTANCE 7
 
+typedef struct {
+    size_t begin;
+    size_t end;
+} Line;
+
+typedef struct {
+    size_t *items;
+    size_t len;
+    size_t cap;
+} LineEnds;
+
 #define MAX_MSG_LEN 4096
 typedef struct {
     int text[MAX_MSG_LEN];
-    int text_len;
+    size_t text_len;
+    LineEnds line_ends;
+    size_t last_word_begin;
     Vector2 cursor_pos;
 } TextEditor;
 
@@ -73,6 +87,12 @@ typedef struct {
     Message messages[MAX_MESSAGE_COUNT];
     size_t message_count;
 } Tpilot;
+
+
+
+static cnd_t recv_msg_cnd;
+static mtx_t recv_msg_mtx;
+static TgMessage tg_msg = {0};
 
 
 
@@ -184,6 +204,72 @@ void tpilot_push_message(
     };
 }
 
+bool grow_line_end(LineEnds *line_ends)
+{
+    if (line_ends->len < line_ends->cap) {
+        line_ends->len += 1;
+        return true;
+    }
+
+    size_t *new_buf = (size_t *) malloc((line_ends->cap+1) * sizeof(size_t));
+    if (new_buf == NULL) {
+        fprintf(stderr, "ERROR: Could not grow one line end: no memory\n");
+        return false;
+    }
+
+    memcpy(new_buf, line_ends->items, line_ends->len * sizeof(size_t));
+    new_buf[line_ends->len] = 0;
+
+    line_ends->cap += 1;
+    line_ends->len += 1;
+    free(line_ends->items);
+    line_ends->items = new_buf;
+
+    return true;
+}
+
+bool recalc_line_ends(
+        int *text, size_t text_len,
+        LineEnds *line_ends,
+        size_t max_line)
+{
+    // clear all lines
+    line_ends->len = 0;
+    memset(line_ends->items, 0x0, line_ends->cap*sizeof(size_t));
+    if (!grow_line_end(line_ends)) return false;
+
+    size_t last_word_begin = 0;
+    size_t curr_line_len = 0;
+    for (size_t i = 0; i < text_len; i++) {
+        if (curr_line_len+1 > max_line) {
+            if (text[i] == ' ') {
+                line_ends->items[line_ends->len-1] = i+1;
+                if (!grow_line_end(line_ends)) return false;
+                line_ends->items[line_ends->len-1] = i+1;
+                curr_line_len = 0;
+            } else if (i - last_word_begin >= max_line) {
+                line_ends->items[line_ends->len-1] = i;
+                if (!grow_line_end(line_ends)) return false;
+                line_ends->items[line_ends->len-1] = i+1;
+                curr_line_len = 1;
+            } else {
+                line_ends->items[line_ends->len-1] = last_word_begin;
+                if (!grow_line_end(line_ends)) return false;
+                curr_line_len = i - last_word_begin + 1;
+                line_ends->items[line_ends->len-1] = i+1;
+            }
+            continue;
+        }
+
+        if (text[i] == ' ') last_word_begin = i+1;
+
+        line_ends->items[line_ends->len-1] += 1;
+        curr_line_len += 1;
+    }
+
+    return true;
+}
+
 void tpilot_render(Tpilot self)
 {
     ClearBackground(BG_COLOR);
@@ -191,22 +277,22 @@ void tpilot_render(Tpilot self)
     Size widget_size;
     Vector2 widget_pos;
     { // render text editor
-        widget_size = calc_text_block_size(
-                self.glyph_width,
-                0, WIDTH,
-                self.editor.text,
-                self.editor.text_len);
+        widget_pos = (Vector2){ .y = HEIGHT - self.editor.line_ends.len*FONT_SIZE };
+        DrawRectangle(0, widget_pos.y, WIDTH, HEIGHT, TED_BG_COLOR);
 
-        widget_pos = (Vector2){ .y = HEIGHT - widget_size.height };
-        DrawRectangle(0, widget_pos.y, WIDTH, widget_size.height, TED_BG_COLOR);
-        Vector2 end_pos = tpilot_draw_text(
-                &self, widget_pos,
-                self.editor.text,
-                self.editor.text_len,
-                TED_FG_COLOR);
-
-        // render cursor
-        DrawTextCodepoint(self.font, L'█', end_pos, FONT_SIZE, TED_CURSOR_COLOR);
+        size_t text_i = 0;
+        Vector2 symbol_pos = widget_pos;
+        for (size_t i = 0; i < self.editor.line_ends.len; i++) {
+            for (; text_i < self.editor.line_ends.items[i]; text_i++) {
+                DrawTextCodepoint(
+                        self.font,
+                        self.editor.text[text_i],
+                        symbol_pos, FONT_SIZE, TED_FG_COLOR);
+                symbol_pos.x += self.glyph_width + SPACING;
+            }
+            symbol_pos.y += FONT_SIZE;
+            symbol_pos.x = 0;
+        }
     }
 
     { // render messages
@@ -244,10 +330,6 @@ void tpilot_render(Tpilot self)
     }
 }
 
-cnd_t recv_msg_cnd;
-mtx_t recv_msg_mtx;
-TgMessage tg_msg = {0};
-
 size_t empty_read(char *b, size_t s, size_t n, void *ud) {(void) b; (void) ud; return s*n; }
 int gui_thread(char *chat_id)
 {
@@ -284,6 +366,8 @@ int gui_thread(char *chat_id)
     ByteBuffer text_buffer = {0};
     ByteBuffer chat_id_buffer = {0};
     Tpilot tpilot = tpilot_new();
+    size_t max_editor_line_len = floor(WIDTH/tpilot.glyph_width);
+
     while (!WindowShouldClose()) {
         int key = GetKeyPressed();
         switch (key) {
@@ -327,6 +411,7 @@ int gui_thread(char *chat_id)
 
                 // clear the editor buffer
                 tpilot.editor.text_len = 0;
+                tpilot.editor.line_ends.len = 0;
 
                 // clear 'url' buffer
                 curlu_err = curl_url_set(url, CURLUPART_QUERY, NULL, 0);
@@ -335,13 +420,25 @@ int gui_thread(char *chat_id)
                 break;
 
             case KEY_BACKSPACE:
+                if (tpilot.editor.text_len == 0) break;
                 tpilot.editor.text_len -= 1;
+                if (!recalc_line_ends(
+                            tpilot.editor.text,
+                            tpilot.editor.text_len,
+                            &tpilot.editor.line_ends,
+                            max_editor_line_len)) return 1;
                 break;
 
             default:
                 key = GetCharPressed();
                 if (key != 0) {
                     tpilot.editor.text[tpilot.editor.text_len++] = key;
+                    if (!recalc_line_ends(
+                                tpilot.editor.text,
+                                tpilot.editor.text_len,
+                                &tpilot.editor.line_ends,
+                                max_editor_line_len)) return 1;
+
                 }
                 break;
         }
@@ -446,6 +543,6 @@ int main(int argc, char *argv[])
     }
 }
 
-// TODO: the program is slow. Maybe something with memory allocating or it happens because one thread
-// TODO: segfaults happen
-// TODO: lines in the editor. It will be more efficient and convinient to implement operations using cursor
+// TODO: refactor 'tpilot_draw_text()'
+// TODO: message widget padding
+// TODO: creating query parameters from fields
