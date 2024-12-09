@@ -363,8 +363,7 @@ int gui_thread(char *chat_id)
 
     InitWindow(WIDTH, HEIGHT, "Tpilot");
 
-    ByteBuffer text_buffer = {0};
-    ByteBuffer chat_id_buffer = {0};
+    ByteBuffer buffer = {0};
     Tpilot tpilot = tpilot_new();
     size_t max_editor_line_len = floor(WIDTH/tpilot.glyph_width);
 
@@ -379,35 +378,29 @@ int gui_thread(char *chat_id)
                         tpilot.editor.text_len,
                         (AuthorName){ L"You", 3 });
 
-                // create query field 'text' with text form the editor
-                char *editor_text_as_utf8 = LoadUTF8(tpilot.editor.text, tpilot.editor.text_len);
-                if (!field_to_str(&text_buffer, (Field) {
-                            .name = SV_STATIC("text"),
-                            .value = sv_from_cstr(editor_text_as_utf8)})) exit(1);
-                UnloadUTF8(editor_text_as_utf8);
 
+                if (!url_append_field(
+                        url, &buffer,
+                        SV("chat_id"),
+                        sv_from_cstr(chat_id))) return 1;
 
-                // create query field 'chat_id' with the argument from command line
-                if (!field_to_str(&chat_id_buffer, (Field){
-                            .name = SV_STATIC("chat_id"),
-                            .value = sv_from_cstr(chat_id)})) exit(1);
+                char *editor_text_utf8 =
+                    LoadUTF8(tpilot.editor.text, tpilot.editor.text_len);
+                if (!url_append_field(
+                        url, &buffer,
+                        SV("text"),
+                        sv_from_cstr(editor_text_utf8))) return 1;
+                UnloadUTF8(editor_text_utf8);
 
-                // append field 'chat_id' to url
-                curlu_err = curl_url_set(url, CURLUPART_QUERY, chat_id_buffer.data, CURLU_APPENDQUERY);
-                if (curlu_err != CURLUE_OK) CURLU_ERR(curlu_err);
-
-                // append field 'text' to url
-                curlu_err = curl_url_set(url, CURLUPART_QUERY, text_buffer.data, CURLU_APPENDQUERY | CURLU_URLENCODE);
-                if (curlu_err != CURLUE_OK) CURLU_ERR(curlu_err);
-
+                // get result
                 char *data;
                 curlu_err = curl_url_get(url, CURLUPART_URL, &data, 0);
                 if (curlu_err != CURLUE_OK) CURLU_ERR(curlu_err);
 
+                // send message
                 curl_easy_setopt(curl_sender, CURLOPT_URL, data);
                 curl_err = curl_easy_perform(curl_sender);
                 if (curl_err != CURLE_OK) CURL_PERFORM_ERR(curl_err);
-                curl_free(data);
 
                 // clear the editor buffer
                 tpilot.editor.text_len = 0;
@@ -416,6 +409,7 @@ int gui_thread(char *chat_id)
                 // clear 'url' buffer
                 curlu_err = curl_url_set(url, CURLUPART_QUERY, NULL, 0);
                 if (curlu_err != CURLUE_OK) CURLU_ERR(curlu_err);
+                curl_free(data);
 
                 break;
 
@@ -467,7 +461,7 @@ int gui_thread(char *chat_id)
     CloseWindow();
 
     // cleanup all related to 'curl'
-    free(text_buffer.data);
+    free(buffer.data);
     curl_url_cleanup(url);
     curl_easy_cleanup(curl_sender);
 
@@ -545,4 +539,3 @@ int main(int argc, char *argv[])
 
 // TODO: refactor 'tpilot_draw_text()'
 // TODO: message widget padding
-// TODO: creating query parameters from fields

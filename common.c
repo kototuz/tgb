@@ -29,7 +29,6 @@
 #define WS_FMT "%.*ls"
 #define WS_ARG(ws) (ws).count, (ws).data
 
-
 typedef struct {
     String_View name;
     String_View value;
@@ -340,6 +339,32 @@ size_t handle_data(char *buf, size_t is, size_t ni, void *something)
     }
 
     return count;
+}
+
+bool url_append_field(
+        CURLU *url,
+        ByteBuffer *bb,
+        String_View field_name,
+        String_View field_value)
+{
+    // clear the buffer
+    bb->len = 0;
+
+    // allocate needed memory
+    if (!bb_reserve(bb, field_name.count + 1 + field_value.count))
+        return false;
+
+    bb_append_slice(bb, field_name.data, field_name.count);
+    bb_append_byte(bb, '=');
+    bb_append_slice(bb, field_value.data, field_value.count);
+
+    CURLUcode curlu_err = curl_url_set(url, CURLUPART_QUERY, bb->data, CURLU_APPENDQUERY | CURLU_URLENCODE);
+    if (curlu_err != CURLUE_OK) {
+        fprintf(stderr, "ERROR: Could not append field: %s\n", curl_url_strerror(curlu_err));
+        return false;
+    }
+
+    return true;
 }
 
 bool field_to_str(ByteBuffer *bb, Field field)
