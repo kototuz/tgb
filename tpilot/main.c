@@ -69,14 +69,9 @@ typedef struct {
 } Size;
 
 typedef struct {
-    int *data;
-    size_t len;
-} AuthorName;
-
-typedef struct {
     int *text;
     size_t len;
-    AuthorName author_name;
+    WStr author_name;
 } Message;
 
 #define MAX_MESSAGE_COUNT 128
@@ -186,7 +181,7 @@ Vector2 tpilot_draw_text(Tpilot *self, Vector2 pos, const int *codepoints, int c
 void tpilot_push_message(
         Tpilot *self,
         const int *msg, size_t msg_len,
-        AuthorName author_name)
+        WStr author_name)
 {
     assert(msg_len > 0);
     assert(self->message_count < MAX_MSG_LEN);
@@ -317,7 +312,7 @@ void tpilot_render(Tpilot self)
             DrawTextCodepoints(
                     self.font,
                     self.messages[i].author_name.data,
-                    self.messages[i].author_name.len,
+                    self.messages[i].author_name.count,
                     widget_pos, FONT_SIZE, SPACING, RED);
 
             // draw message
@@ -376,7 +371,7 @@ int gui_thread(char *chat_id)
                         &tpilot,
                         tpilot.editor.text,
                         tpilot.editor.text_len,
-                        (AuthorName){ L"You", 3 });
+                        (WStr)WS_LIT(L"You"));
 
 
                 if (!url_append_field(
@@ -439,11 +434,10 @@ int gui_thread(char *chat_id)
 
         // handle input message if it appears
         if (mtx_trylock(&recv_msg_mtx) == thrd_success) {
-            tpilot_push_message(
-                    &tpilot,
-                    tg_msg.text.data,
-                    tg_msg.text.count,
-                    (AuthorName){ L"Anon", 4 });
+            WStr username = tg_msg.has_username ? tg_msg.username : (WStr)WS_LIT(L"Not a user");
+            WStr text = tg_msg.has_text ? tg_msg.text : (WStr)WS_LIT(L"[Not a text]");
+            tpilot_push_message(&tpilot, text.data, text.count, username);
+
             if (cnd_signal(&recv_msg_cnd) != thrd_success) {
                 fprintf(stderr, "ERROR: Could not signal to a condition\n");
                 exit(1);
@@ -484,12 +478,10 @@ int main(int argc, char *argv[])
     curl_easy_setopt(curl, CURLOPT_WRITEDATA, (void *) &resp_text);
     curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, write_cb);
 
-    ByteBuffer bb = {0};
-
     // get last message id
     CURLcode err = curl_easy_perform(curl);
     if (err != CURLE_OK) CURL_PERFORM_ERR(err);
-    if (!parse_tg_response(&bb, resp_text, &tg_msg)) return 1;
+    if (!parse_tg_response(resp_text, &tg_msg)) return 1;
     size_t last_msg_id = tg_msg.id;
 
     // create a new mutex and lock it
@@ -519,14 +511,26 @@ int main(int argc, char *argv[])
         resp_text = (String_View){0};
         err = curl_easy_perform(curl);
         if (err != CURLE_OK) CURL_PERFORM_ERR(err);
-        if (!parse_tg_response(&bb, resp_text, &tg_msg)) exit(1);
+        if (!parse_tg_response(resp_text, &tg_msg)) exit(1);
         if (tg_msg.id > last_msg_id) {
             last_msg_id = tg_msg.id;
 
             wprintf(L"=============================\n");
             wprintf(L"Message id: "SV_Fmt"\n", SV_Arg(tg_msg.id_str));
             wprintf(L"Chat id:    "SV_Fmt"\n", SV_Arg(tg_msg.chat_id_str));
-            wprintf(L"Text:       "WS_FMT"\n", WS_ARG(tg_msg.text));
+
+            if (tg_msg.has_text) {
+                wprintf(L"Text:       "WS_FMT"\n", WS_ARG(tg_msg.text));
+            } else {
+                wprintf(L"Text:       [None]\n");
+            }
+
+            if (tg_msg.has_username) {
+                wprintf(L"Username:   "WS_FMT"\n", WS_ARG(tg_msg.username));
+            } else {
+                wprintf(L"Username:   [None]\n");
+            }
+
             wprintf(L"=============================\n");
 
             if (cnd_wait(&recv_msg_cnd, &recv_msg_mtx) != thrd_success) {
