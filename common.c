@@ -57,8 +57,13 @@ typedef struct {
     size_t chat_id;
     String_View chat_id_str;
 
+    ByteBuffer text_buffer;
     WStr text;
     bool has_text;
+
+    ByteBuffer username_buffer;
+    WStr username;
+    bool has_username;
 } TgMessage;
 
 
@@ -226,12 +231,16 @@ size_t write_cb(char *data, size_t size, size_t nmemb, void *clientp)
 
 #define FIELD_FMT    "["SV_Fmt":"SV_Fmt"]"
 #define FIELD_ARG(f) SV_Arg(f.name), SV_Arg(f.value)
-bool parse_tg_response(ByteBuffer *bb, String_View src, TgMessage *result)
+bool parse_tg_response(String_View src, TgMessage *result)
 {
-    // clear the buffer
-    bb->len = 0;
-
+    String_View src2;
     Field field = {0};
+
+    // clear result
+    result->text_buffer.len = 0;
+    result->username_buffer.len = 0;
+    result->has_text = false;
+    result->has_username = false;
 
     // check if the response is ok
     assert(next_field(&src, &field));
@@ -263,16 +272,40 @@ bool parse_tg_response(ByteBuffer *bb, String_View src, TgMessage *result)
     result->id_str = field.value;
     result->id = parse_int(field.value);
 
+    // get username if it exists
+    for (;;) {
+        assert(next_field(&src, &field));
+        if (sv_eq(field.name, SV("from"))) {
+            src2 = field.value;
+
+            // skip that we don't need
+            assert(next_field(&src2, &field));
+            assert(next_field(&src2, &field));
+
+            assert(next_field(&src2, &field));
+            result->has_username = true;
+            if (!asciiutf8_to_wstr(
+                        &result->username_buffer,
+                        field.value,
+                        &result->username)) return false;
+
+            assert(skip_fields_until(&src, SV("chat"), &field));
+            break;
+        } else if (sv_eq(field.name, SV("chat"))) break;
+    }
+
     // get 'chat_id'
-    assert(skip_fields_until(&src, SV("chat"), &field));
-    String_View src2 = field.value;
+    src2 = field.value;
     assert(next_field(&src2, &field));
     result->chat_id_str = field.value;
     result->chat_id = parse_int(field.value);
 
     // get 'text'
     if (!skip_fields_until(&src, SV("text"), &field)) return true;
-    if (!asciiutf8_to_wstr(bb, field.value, &result->text)) return false;
+    if (!asciiutf8_to_wstr(
+                &result->text_buffer,
+                field.value,
+                &result->text)) return false;
     result->has_text = true;
 
     return true;
