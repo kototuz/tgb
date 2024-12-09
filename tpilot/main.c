@@ -366,13 +366,14 @@ int gui_thread(char *chat_id)
         int key = GetKeyPressed();
         switch (key) {
             case KEY_ENTER:
+                if (tpilot.editor.text_len == 0) break;
+
                 // render message on client
                 tpilot_push_message(
                         &tpilot,
                         tpilot.editor.text,
                         tpilot.editor.text_len,
                         (WStr)WS_LIT(L"You"));
-
 
                 if (!url_append_field(
                         url, &buffer,
