@@ -537,5 +537,7 @@ int main(int argc, char *argv[])
     }
 }
 
+// TODO: cursor movements and editing
+// TODO: Username
 // TODO: refactor 'tpilot_draw_text()'
 // TODO: message widget padding
