@@ -28,14 +28,14 @@
 // TODO: the spacing that greater then 0 is not supported. Functions don't consider it
 #define SPACING          0
 
-#define BG_COLOR (Color){0x0f,0x0f,0x0f,0xff}
+#define CHAT_BG_COLOR (Color){0x0f,0x0f,0x0f,0xff}
 
 #define MSG_BG_COLOR          (Color){0x21,0x21,0x21,0xff}
 #define MSG_FG_COLOR          WHITE
-#define MSG_REC_ROUNDNESS     10
+#define MSG_REC_ROUNDNESS     20
 #define MSG_REC_SEGMENT_COUNT 20
-#define MSG_LEFT_BOUND_X      10
-#define MSG_RIGHT_BOUND_X     (WIDTH-10)
+#define MSG_TEXT_MARGIN       10
+#define MSG_TEXT_PADDING      15
 
 #define TED_BG_COLOR     MSG_BG_COLOR
 #define TED_FG_COLOR     WHITE
@@ -70,7 +70,7 @@ typedef struct {
 
 typedef struct {
     int *text;
-    size_t len;
+    LineEnds line_ends;
     WStr author_name;
 } Message;
 
@@ -78,6 +78,7 @@ typedef struct {
 typedef struct {
     Font font;
     float glyph_width;
+    size_t max_msg_line_len;
     TextEditor editor;
     Message messages[MAX_MESSAGE_COUNT];
     size_t message_count;
@@ -135,68 +136,36 @@ Tpilot tpilot_new()
     tpilot.glyph_width =
         FONT_SIZE / tpilot.font.baseSize * tpilot.font.glyphs[0].advanceX;
 
+    tpilot.max_msg_line_len =
+        floor((WIDTH-2*MSG_TEXT_PADDING-2*MSG_TEXT_MARGIN) / tpilot.glyph_width);
+
+    INFO(L"Max msg line length: %zu\n", tpilot.max_msg_line_len);
+
     // TODO: maybe 'cursor_pos' is redundant
     tpilot.editor.cursor_pos.y = HEIGHT - FONT_SIZE;
 
     return tpilot;
 }
 
-// NOTE: the function renders text 'down to up'. Returns the text end position
-Vector2 tpilot_draw_text(Tpilot *self, Vector2 pos, const int *codepoints, int codepoint_count, Color color)
-{
-    int word_start = 0;
-    float start_x = pos.x;
-    for (int i = 0; i < codepoint_count; i++) {
-        if (pos.x + (i-word_start+1)*self->glyph_width > WIDTH) {
-            pos.x = start_x;
-            pos.y += FONT_SIZE;
-            for (; word_start <= i; word_start++) {
-                DrawTextCodepoint(self->font, codepoints[word_start], pos, FONT_SIZE, color);
-                pos.x += self->glyph_width + SPACING;
-            }
-        } else if (codepoints[i] == '\n') {
-            for (;word_start < i; word_start++) {
-                DrawTextCodepoint(self->font, codepoints[word_start], pos, FONT_SIZE, color);
-                pos.x += self->glyph_width + SPACING;
-            }
-            pos.x = start_x;
-            pos.y += FONT_SIZE;
-            word_start += 1;
-        } else if (codepoints[i] == ' ') {
-            for (;word_start <= i; word_start++) {
-                DrawTextCodepoint(self->font, codepoints[word_start], pos, FONT_SIZE, color);
-                pos.x += self->glyph_width + SPACING;
-            }
-        } else if (i+1 == codepoint_count) {
-            for (;word_start < codepoint_count; word_start++) {
-                DrawTextCodepoint(self->font, codepoints[word_start], pos, FONT_SIZE, color);
-                pos.x += self->glyph_width + SPACING;
-            }
-        }
-    }
-
-    return pos;
-}
-
-void tpilot_push_message(
+void tpilot_draw_text(
         Tpilot *self,
-        const int *msg, size_t msg_len,
-        WStr author_name)
+        Vector2 pos,
+        const int *text,
+        LineEnds line_ends)
 {
-    assert(msg_len > 0);
-    assert(self->message_count < MAX_MSG_LEN);
-
-    size_t message_size = msg_len * sizeof(int);
-    int *msg_text = MemAlloc(message_size);
-    memcpy(msg_text, msg, message_size);
-
-    printf("Push message #%zu: %ls\n", self->message_count, msg_text);
-
-    self->messages[self->message_count++] = (Message) {
-        .text = msg_text,
-        .len = msg_len,
-        .author_name = author_name
-    };
+    size_t begin_x = pos.x;
+    size_t text_i = 0;
+    for (size_t i = 0; i < line_ends.len; i++) {
+        for (; text_i < line_ends.items[i]; text_i++) {
+            DrawTextCodepoint(
+                    self->font,
+                    text[text_i],
+                    pos, FONT_SIZE, TED_FG_COLOR);
+            pos.x += self->glyph_width + SPACING;
+        }
+        pos.y += FONT_SIZE;
+        pos.x = begin_x;
+    }
 }
 
 bool grow_line_end(LineEnds *line_ends)
@@ -223,8 +192,9 @@ bool grow_line_end(LineEnds *line_ends)
     return true;
 }
 
+
 bool recalc_line_ends(
-        int *text, size_t text_len,
+        const int *text, size_t text_len,
         LineEnds *line_ends,
         size_t max_line)
 {
@@ -238,7 +208,7 @@ bool recalc_line_ends(
     for (size_t i = 0; i < text_len; i++) {
         if (curr_line_len+1 > max_line) {
             if (text[i] == ' ') {
-                line_ends->items[line_ends->len-1] = i+1;
+                line_ends->items[line_ends->len-1] = i;
                 if (!grow_line_end(line_ends)) return false;
                 line_ends->items[line_ends->len-1] = i+1;
                 curr_line_len = 0;
@@ -265,42 +235,72 @@ bool recalc_line_ends(
     return true;
 }
 
+bool tpilot_push_message(
+        Tpilot *self,
+        const int *msg,
+        size_t msg_len,
+        WStr author_name)
+{
+    assert(msg_len > 0);
+    assert(self->message_count < MAX_MSG_LEN);
+
+    size_t message_size = msg_len * sizeof(int);
+    int *msg_text = MemAlloc(message_size);
+    memcpy(msg_text, msg, message_size);
+
+    LineEnds line_ends = {0};
+    if (!recalc_line_ends(
+                msg, msg_len,
+                &line_ends,
+                self->max_msg_line_len)) return false;
+
+    self->messages[self->message_count++] = (Message) {
+        .text = msg_text,
+        .line_ends = line_ends,
+        .author_name = author_name
+    };
+
+    return true;
+}
+
+size_t calc_max_line(LineEnds line_ends)
+{
+    size_t result = line_ends.items[0];
+    for (size_t i = 1; i < line_ends.len; i++) {
+        size_t len = line_ends.items[i] - line_ends.items[i-1];
+        if (len > result) result = len;
+    }
+
+    return result;
+}
+
 void tpilot_render(Tpilot self)
 {
-    ClearBackground(BG_COLOR);
+    ClearBackground(CHAT_BG_COLOR);
 
     Size widget_size;
     Vector2 widget_pos;
     { // render text editor
         widget_pos = (Vector2){ .y = HEIGHT - self.editor.line_ends.len*FONT_SIZE };
         DrawRectangle(0, widget_pos.y, WIDTH, HEIGHT, TED_BG_COLOR);
-
-        size_t text_i = 0;
-        Vector2 symbol_pos = widget_pos;
-        for (size_t i = 0; i < self.editor.line_ends.len; i++) {
-            for (; text_i < self.editor.line_ends.items[i]; text_i++) {
-                DrawTextCodepoint(
-                        self.font,
-                        self.editor.text[text_i],
-                        symbol_pos, FONT_SIZE, TED_FG_COLOR);
-                symbol_pos.x += self.glyph_width + SPACING;
-            }
-            symbol_pos.y += FONT_SIZE;
-            symbol_pos.x = 0;
-        }
+        tpilot_draw_text(
+                &self,
+                widget_pos,
+                self.editor.text,
+                self.editor.line_ends);
     }
 
     { // render messages
-        widget_pos.x = MSG_LEFT_BOUND_X;
+        widget_pos.x = MSG_TEXT_MARGIN;
         for (int i = self.message_count-1; i >= 0; i--) {
-            widget_size = calc_text_block_size(
-                    self.glyph_width,
-                    MSG_LEFT_BOUND_X, MSG_RIGHT_BOUND_X,
-                    self.messages[i].text,
-                    self.messages[i].len);
+            widget_size.height = self.messages[i].line_ends.len*FONT_SIZE;
+            widget_size.height += FONT_SIZE; // reserve place for 'username'
+            widget_size.height += 2*MSG_TEXT_PADDING;
 
-            widget_size.height += FONT_SIZE;
-            widget_pos.y -= MSG_DISTANCE + widget_size.height;
+            widget_size.width = calc_max_line(self.messages[i].line_ends)*self.glyph_width;
+            widget_size.width += 2*MSG_TEXT_PADDING;
+
+           widget_pos.y -= MSG_TEXT_MARGIN + widget_size.height;
 
             // draw message background
             DrawRectangleRounded(
@@ -313,14 +313,14 @@ void tpilot_render(Tpilot self)
                     self.font,
                     self.messages[i].author_name.data,
                     self.messages[i].author_name.count,
-                    widget_pos, FONT_SIZE, SPACING, RED);
+                    (Vector2){ widget_pos.x+MSG_TEXT_PADDING, widget_pos.y+MSG_TEXT_PADDING},
+                    FONT_SIZE, SPACING, RED);
 
             // draw message
             tpilot_draw_text(&self,
-                    (Vector2){ widget_pos.x, widget_pos.y+FONT_SIZE },
+                    (Vector2){ widget_pos.x+MSG_TEXT_PADDING, widget_pos.y+MSG_TEXT_PADDING+FONT_SIZE },
                     self.messages[i].text,
-                    self.messages[i].len,
-                    MSG_FG_COLOR);
+                    self.messages[i].line_ends);
         }
     }
 }
@@ -333,7 +333,7 @@ int gui_thread(char *chat_id)
 
     // this message is necessary without it programm enter the 'ascii print system'
     // In short you cannot use print functions from <stdio> and <wchar.h> simultaneously
-    wprintf(L"Hello, from tpilot\n");
+    SetTraceLogLevel(LOG_ERROR);
 
     CURLU *url;
     CURL *curl_sender;
@@ -437,6 +437,7 @@ int gui_thread(char *chat_id)
         if (mtx_trylock(&recv_msg_mtx) == thrd_success) {
             WStr username = tg_msg.has_username ? tg_msg.username : (WStr)WS_LIT(L"Not a user");
             WStr text = tg_msg.has_text ? tg_msg.text : (WStr)WS_LIT(L"[Not a text]");
+
             tpilot_push_message(&tpilot, text.data, text.count, username);
 
             if (cnd_signal(&recv_msg_cnd) != thrd_success) {
