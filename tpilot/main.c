@@ -44,22 +44,21 @@
 #define MSG_DISTANCE 7
 
 typedef struct {
-    size_t begin;
-    size_t end;
+    const int *text;
+    size_t len;
 } Line;
 
 typedef struct {
-    size_t *items;
+    int *text;
+    size_t text_len;
+    Line *items;
     size_t len;
     size_t cap;
-} LineEnds;
+} Lines;
 
 #define MAX_MSG_LEN 4096
 typedef struct {
-    int text[MAX_MSG_LEN];
-    size_t text_len;
-    LineEnds line_ends;
-    size_t last_word_begin;
+    Lines lines;
     Vector2 cursor_pos;
 } TextEditor;
 
@@ -69,8 +68,7 @@ typedef struct {
 } Size;
 
 typedef struct {
-    int *text;
-    LineEnds line_ends;
+    Lines lines;
     WStr author_name;
 } Message;
 
@@ -144,93 +142,94 @@ Tpilot tpilot_new()
     // TODO: maybe 'cursor_pos' is redundant
     tpilot.editor.cursor_pos.y = HEIGHT - FONT_SIZE;
 
+    static int ted_buffer[4096];
+    tpilot.editor.lines = (Lines){ .text = ted_buffer };
+
     return tpilot;
 }
 
 void tpilot_draw_text(
         Tpilot *self,
         Vector2 pos,
-        const int *text,
-        LineEnds line_ends)
+        Lines lines)
 {
     size_t begin_x = pos.x;
-    size_t text_i = 0;
-    for (size_t i = 0; i < line_ends.len; i++) {
-        for (; text_i < line_ends.items[i]; text_i++) {
-            DrawTextCodepoint(
-                    self->font,
-                    text[text_i],
-                    pos, FONT_SIZE, TED_FG_COLOR);
-            pos.x += self->glyph_width + SPACING;
-        }
+    for (size_t i = 0; i < lines.len; i++) {
+        DrawTextCodepoints(
+                self->font,
+                lines.items[i].text,
+                lines.items[i].len,
+                pos, FONT_SIZE, SPACING, RAYWHITE);
         pos.y += FONT_SIZE;
         pos.x = begin_x;
     }
 }
 
-bool grow_line_end(LineEnds *line_ends)
+bool grow_line(Lines *lines)
 {
-    if (line_ends->len < line_ends->cap) {
-        line_ends->len += 1;
+    if (lines->len < lines->cap) {
+        lines->len += 1;
         return true;
     }
 
-    size_t *new_buf = (size_t *) malloc((line_ends->cap+1) * sizeof(size_t));
+    Line *new_buf = (Line *) malloc((lines->cap+1) * sizeof(Line));
     if (new_buf == NULL) {
-        fprintf(stderr, "ERROR: Could not grow one line end: no memory\n");
+        fprintf(stderr, "ERROR: Could not grow one line: no memory\n");
         return false;
     }
 
-    memcpy(new_buf, line_ends->items, line_ends->len * sizeof(size_t));
-    new_buf[line_ends->len] = 0;
 
-    line_ends->cap += 1;
-    line_ends->len += 1;
-    free(line_ends->items);
-    line_ends->items = new_buf;
+    memcpy(new_buf, lines->items, lines->len * sizeof(Line));
+    new_buf[lines->len] = (Line){0};
+
+    lines->cap += 1;
+    lines->len += 1;
+    if (lines->items != NULL) {
+        free(lines->items);
+    }
+    lines->items = new_buf;
 
     return true;
 }
 
-
-bool recalc_line_ends(
-        const int *text, size_t text_len,
-        LineEnds *line_ends,
-        size_t max_line)
+bool recalc_lines(Lines *lines, size_t max_line)
 {
     // clear all lines
-    line_ends->len = 0;
-    memset(line_ends->items, 0x0, line_ends->cap*sizeof(size_t));
-    if (!grow_line_end(line_ends)) return false;
+    lines->len = 0;
+    memset(lines->items, 0x0, lines->cap*sizeof(Line));
+    if (!grow_line(lines)) return false;
+    lines->items[0].text = lines->text;
 
     size_t last_word_begin = 0;
-    size_t curr_line_len = 0;
-    for (size_t i = 0; i < text_len; i++) {
-        if (curr_line_len+1 > max_line) {
-            if (text[i] == ' ') {
-                line_ends->items[line_ends->len-1] = i;
-                if (!grow_line_end(line_ends)) return false;
-                line_ends->items[line_ends->len-1] = i+1;
-                curr_line_len = 0;
+    Line *curr_line = &lines->items[0];
+    for (size_t i = 0; i < lines->text_len; i++) {
+        if (curr_line->len+1 > max_line) {
+            if (lines->text[i] == ' ') {
+                do {
+                    if (++i >= lines->text_len) return true;
+                } while (lines->text[i] == ' ');
+                if (!grow_line(lines)) return false;
+                curr_line = &lines->items[lines->len-1];
+                curr_line->len = 1;
+                curr_line->text = &lines->text[i];
             } else if (i - last_word_begin >= max_line) {
-                line_ends->items[line_ends->len-1] = i;
-                if (!grow_line_end(line_ends)) return false;
-                line_ends->items[line_ends->len-1] = i+1;
-                curr_line_len = 1;
+                if (!grow_line(lines)) return false;
+                curr_line = &lines->items[lines->len-1];
+                curr_line->len = 1;
+                curr_line->text = &lines->text[i];
             } else {
-                line_ends->items[line_ends->len-1] = last_word_begin;
-                if (!grow_line_end(line_ends)) return false;
-                curr_line_len = i - last_word_begin + 1;
-                line_ends->items[line_ends->len-1] = i+1;
+                curr_line->len -= i - last_word_begin + 1;
+                if (!grow_line(lines)) return false;
+                curr_line = &lines->items[lines->len-1];
+                curr_line->text = &lines->text[last_word_begin];
+                curr_line->len = i - last_word_begin + 1;
             }
-            continue;
+        } else {
+            curr_line->len += 1;
+            if (lines->text[i] == ' ') last_word_begin = i+1;
         }
-
-        if (text[i] == ' ') last_word_begin = i+1;
-
-        line_ends->items[line_ends->len-1] += 1;
-        curr_line_len += 1;
     }
+
 
     return true;
 }
@@ -245,30 +244,24 @@ bool tpilot_push_message(
     assert(self->message_count < MAX_MSG_LEN);
 
     size_t message_size = msg_len * sizeof(int);
-    int *msg_text = MemAlloc(message_size);
-    memcpy(msg_text, msg, message_size);
-
-    LineEnds line_ends = {0};
-    if (!recalc_line_ends(
-                msg, msg_len,
-                &line_ends,
-                self->max_msg_line_len)) return false;
+    Lines lines = { .text = MemAlloc(message_size), .text_len = msg_len };
+    memcpy(lines.text, msg, message_size);
+    if (!recalc_lines(&lines, self->max_msg_line_len)) return false;
 
     self->messages[self->message_count++] = (Message) {
-        .text = msg_text,
-        .line_ends = line_ends,
+        .lines = lines,
         .author_name = author_name
     };
 
     return true;
 }
 
-size_t calc_max_line(LineEnds line_ends)
+size_t calc_max_line(Lines lines)
 {
-    size_t result = line_ends.items[0];
-    for (size_t i = 1; i < line_ends.len; i++) {
-        size_t len = line_ends.items[i] - line_ends.items[i-1];
-        if (len > result) result = len;
+    size_t result = 0;
+    for (size_t i = 0; i < lines.len; i++) {
+        if (lines.items[i].len > result)
+            result = lines.items[i].len;
     }
 
     return result;
@@ -281,23 +274,22 @@ void tpilot_render(Tpilot self)
     Size widget_size;
     Vector2 widget_pos;
     { // render text editor
-        widget_pos = (Vector2){ .y = HEIGHT - self.editor.line_ends.len*FONT_SIZE };
+        widget_pos = (Vector2){ .y = HEIGHT - self.editor.lines.len*FONT_SIZE };
         DrawRectangle(0, widget_pos.y, WIDTH, HEIGHT, TED_BG_COLOR);
         tpilot_draw_text(
                 &self,
                 widget_pos,
-                self.editor.text,
-                self.editor.line_ends);
+                self.editor.lines);
     }
 
     { // render messages
         widget_pos.x = MSG_TEXT_MARGIN;
         for (int i = self.message_count-1; i >= 0; i--) {
-            widget_size.height = self.messages[i].line_ends.len*FONT_SIZE;
+            widget_size.height = self.messages[i].lines.len*FONT_SIZE;
             widget_size.height += FONT_SIZE; // reserve place for 'username'
             widget_size.height += 2*MSG_TEXT_PADDING;
 
-            widget_size.width = calc_max_line(self.messages[i].line_ends)*self.glyph_width;
+            widget_size.width = calc_max_line(self.messages[i].lines)*self.glyph_width;
             widget_size.width += 2*MSG_TEXT_PADDING;
 
            widget_pos.y -= MSG_TEXT_MARGIN + widget_size.height;
@@ -319,8 +311,7 @@ void tpilot_render(Tpilot self)
             // draw message
             tpilot_draw_text(&self,
                     (Vector2){ widget_pos.x+MSG_TEXT_PADDING, widget_pos.y+MSG_TEXT_PADDING+FONT_SIZE },
-                    self.messages[i].text,
-                    self.messages[i].line_ends);
+                    self.messages[i].lines);
         }
     }
 }
@@ -366,13 +357,13 @@ int gui_thread(char *chat_id)
         int key = GetKeyPressed();
         switch (key) {
             case KEY_ENTER:
-                if (tpilot.editor.text_len == 0) break;
+                if (tpilot.editor.lines.text_len == 0) break;
 
                 // render message on client
                 tpilot_push_message(
                         &tpilot,
-                        tpilot.editor.text,
-                        tpilot.editor.text_len,
+                        tpilot.editor.lines.text,
+                        tpilot.editor.lines.text_len,
                         (WStr)WS_LIT(L"You"));
 
                 if (!url_append_field(
@@ -381,7 +372,7 @@ int gui_thread(char *chat_id)
                         sv_from_cstr(chat_id))) return 1;
 
                 char *editor_text_utf8 =
-                    LoadUTF8(tpilot.editor.text, tpilot.editor.text_len);
+                    LoadUTF8(tpilot.editor.lines.text, tpilot.editor.lines.text_len);
                 if (!url_append_field(
                         url, &buffer,
                         SV("text"),
@@ -399,8 +390,8 @@ int gui_thread(char *chat_id)
                 if (curl_err != CURLE_OK) CURL_PERFORM_ERR(curl_err);
 
                 // clear the editor buffer
-                tpilot.editor.text_len = 0;
-                tpilot.editor.line_ends.len = 0;
+                tpilot.editor.lines.text_len = 0;
+                tpilot.editor.lines.len = 0;
 
                 // clear 'url' buffer
                 curlu_err = curl_url_set(url, CURLUPART_QUERY, NULL, 0);
@@ -410,24 +401,19 @@ int gui_thread(char *chat_id)
                 break;
 
             case KEY_BACKSPACE:
-                if (tpilot.editor.text_len == 0) break;
-                tpilot.editor.text_len -= 1;
-                if (!recalc_line_ends(
-                            tpilot.editor.text,
-                            tpilot.editor.text_len,
-                            &tpilot.editor.line_ends,
+                if (tpilot.editor.lines.text_len == 0) break;
+                tpilot.editor.lines.text_len -= 1;
+                if (!recalc_lines(
+                            &tpilot.editor.lines,
                             max_editor_line_len)) return 1;
                 break;
 
             default:
                 key = GetCharPressed();
                 if (key != 0) {
-                    tpilot.editor.text[tpilot.editor.text_len++] = key;
-                    if (!recalc_line_ends(
-                                tpilot.editor.text,
-                                tpilot.editor.text_len,
-                                &tpilot.editor.line_ends,
-                                max_editor_line_len)) return 1;
+                    tpilot.editor.lines.text[tpilot.editor.lines.text_len++] = key;
+                    if (!recalc_lines(&tpilot.editor.lines, max_editor_line_len))
+                        return 1;
 
                 }
                 break;
@@ -544,6 +530,3 @@ int main(int argc, char *argv[])
 }
 
 // TODO: cursor movements and editing
-// TODO: Username
-// TODO: refactor 'tpilot_draw_text()'
-// TODO: message widget padding
