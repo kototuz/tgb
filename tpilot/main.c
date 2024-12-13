@@ -36,12 +36,11 @@
 #define MSG_REC_SEGMENT_COUNT 20
 #define MSG_TEXT_MARGIN       10
 #define MSG_TEXT_PADDING      15
+#define MSG_AUTHOR_NAME_COLOR GREEN
 
 #define TED_BG_COLOR     MSG_BG_COLOR
 #define TED_FG_COLOR     WHITE
 #define TED_CURSOR_COLOR WHITE
-
-#define MSG_DISTANCE 7
 
 typedef struct {
     const int *text;
@@ -151,7 +150,8 @@ Tpilot tpilot_new()
 void tpilot_draw_text(
         Tpilot *self,
         Vector2 pos,
-        Lines lines)
+        Lines lines,
+        Color color)
 {
     size_t begin_x = pos.x;
     for (size_t i = 0; i < lines.len; i++) {
@@ -159,7 +159,7 @@ void tpilot_draw_text(
                 self->font,
                 lines.items[i].text,
                 lines.items[i].len,
-                pos, FONT_SIZE, SPACING, RAYWHITE);
+                pos, FONT_SIZE, SPACING, color);
         pos.y += FONT_SIZE;
         pos.x = begin_x;
     }
@@ -279,7 +279,8 @@ void tpilot_render(Tpilot self)
         tpilot_draw_text(
                 &self,
                 widget_pos,
-                self.editor.lines);
+                self.editor.lines,
+                TED_FG_COLOR);
     }
 
     { // render messages
@@ -310,12 +311,14 @@ void tpilot_render(Tpilot self)
                     self.messages[i].author_name.data,
                     self.messages[i].author_name.count,
                     (Vector2){ widget_pos.x+MSG_TEXT_PADDING, widget_pos.y+MSG_TEXT_PADDING},
-                    FONT_SIZE, SPACING, RED);
+                    FONT_SIZE, SPACING, MSG_AUTHOR_NAME_COLOR);
 
             // draw message
-            tpilot_draw_text(&self,
+            tpilot_draw_text(
+                    &self,
                     (Vector2){ widget_pos.x+MSG_TEXT_PADDING, widget_pos.y+MSG_TEXT_PADDING+FONT_SIZE },
-                    self.messages[i].lines);
+                    self.messages[i].lines,
+                    MSG_FG_COLOR);
         }
     }
 }
