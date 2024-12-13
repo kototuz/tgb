@@ -289,10 +289,14 @@ void tpilot_render(Tpilot self)
             widget_size.height += FONT_SIZE; // reserve place for 'username'
             widget_size.height += 2*MSG_TEXT_PADDING;
 
+            // calculate width
             widget_size.width = calc_max_line(self.messages[i].lines)*self.glyph_width;
+            size_t author_name_width = self.messages[i].author_name.count*self.glyph_width;
+            if (widget_size.width < author_name_width)
+                widget_size.width = author_name_width;
             widget_size.width += 2*MSG_TEXT_PADDING;
 
-           widget_pos.y -= MSG_TEXT_MARGIN + widget_size.height;
+            widget_pos.y -= MSG_TEXT_MARGIN + widget_size.height;
 
             // draw message background
             DrawRectangleRounded(
