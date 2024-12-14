@@ -48,25 +48,31 @@
 // mappings
 #define KEY(k) (IsKeyPressed(KEY_ ## k) || IsKeyPressedRepeat(KEY_ ## k))
 #ifdef EMACS_KEYMAP
-#   define KEYMAP_MOVE_FORWARD  (IsKeyDown(KEY_LEFT_CONTROL) && KEY(F))
-#   define KEYMAP_MOVE_BACKWARD (IsKeyDown(KEY_LEFT_CONTROL) && KEY(B))
-#   define KEYMAP_DELETE        (IsKeyDown(KEY_LEFT_CONTROL) && KEY(H))
-#   define KEYMAP_MOVE_UP       (IsKeyDown(KEY_LEFT_CONTROL) && KEY(P))
-#   define KEYMAP_MOVE_DOWN     (IsKeyDown(KEY_LEFT_CONTROL) && KEY(N))
+#   define KEYMAP_MOVE_FORWARD       (IsKeyDown(KEY_LEFT_CONTROL) && KEY(F))
+#   define KEYMAP_MOVE_BACKWARD      (IsKeyDown(KEY_LEFT_CONTROL) && KEY(B))
+#   define KEYMAP_MOVE_FORWARD_WORD  (IsKeyDown(KEY_LEFT_ALT)     && KEY(F))
+#   define KEYMAP_MOVE_BACKWARD_WORD (IsKeyDown(KEY_LEFT_ALT)     && KEY(B))
+#   define KEYMAP_DELETE             (IsKeyDown(KEY_LEFT_CONTROL) && KEY(H))
+#   define KEYMAP_MOVE_UP            (IsKeyDown(KEY_LEFT_CONTROL) && KEY(P))
+#   define KEYMAP_MOVE_DOWN          (IsKeyDown(KEY_LEFT_CONTROL) && KEY(N))
 #else
-#   define KEYMAP_MOVE_FORWARD  (KEY(RIGHT))
-#   define KEYMAP_MOVE_BACKWARD (KEY(LEFT))
-#   define KEYMAP_DELETE        (KEY(BACKSPACE))
-#   define KEYMAP_MOVE_UP       (KEY(UP))
-#   define KEYMAP_MOVE_DOWN     (KEY(DOWN))
+#   define KEYMAP_MOVE_FORWARD       (KEY(RIGHT))
+#   define KEYMAP_MOVE_BACKWARD      (KEY(LEFT))
+#   define KEYMAP_MOVE_FORWARD_WORD  (IsKeyDown(KEY_LEFT_CONTROL) && KEY(LEFT))
+#   define KEYMAP_MOVE_BACKWARD_WORD (IsKeyDown(KEY_LEFT_CONTROL) && KEY(RIGHT))
+#   define KEYMAP_DELETE             (KEY(BACKSPACE))
+#   define KEYMAP_MOVE_UP            (KEY(UP))
+#   define KEYMAP_MOVE_DOWN          (KEY(DOWN))
 #endif
 
 typedef enum {
-    DIR_FORWARD,
-    DIR_BACKWARD,
-    DIR_UP,
-    DIR_DOWN,
-} Direction;
+    MOTION_FORWARD_WORD,
+    MOTION_BACKWARD_WORD,
+    MOTION_FORWARD,
+    MOTION_BACKWARD,
+    MOTION_UP,
+    MOTION_DOWN,
+} Motion;
 
 typedef struct {
     int *text;
@@ -392,49 +398,72 @@ void ted_move_cursor_to_ptr(TextEditor *te, int *ptr)
     te->cursor_pos = pos;
 }
 
-void ted_try_move_cursor(TextEditor *te, Direction dir)
+void ted_try_move_cursor(TextEditor *te, Motion dir)
 {
+    TextEditorPos p = te->cursor_pos;
+    int *curr_text_ptr, *ptr;
     switch (dir) {
-        case DIR_BACKWARD:
-            if (te->cursor_pos.col == 0) {
-                if (te->cursor_pos.row > 0) {
-                    te->cursor_pos.row -= 1;
-                    te->cursor_pos.col = te->lines.items[te->cursor_pos.row].len;
+        case MOTION_BACKWARD:
+            if (p.col == 0) {
+                if (p.row > 0) {
+                    p.row -= 1;
+                    p.col = te->lines.items[p.row].len;
                 }
             } else {
-                te->cursor_pos.col -= 1;
+                p.col -= 1;
             }
             break;
 
-        case DIR_FORWARD:
-            if (te->cursor_pos.col == te->lines.items[te->cursor_pos.row].len) {
-                if (te->cursor_pos.row+1 < te->lines.len) {
-                    te->cursor_pos.row += 1;
-                    te->cursor_pos.col = 0;
+        case MOTION_FORWARD:
+            if (p.col == te->lines.items[p.row].len) {
+                if (p.row+1 < te->lines.len) {
+                    p.row += 1;
+                    p.col = 0;
                 }
             } else {
-                te->cursor_pos.col += 1;
+                p.col += 1;
             }
             break;
 
-        case DIR_UP:
-            if (te->cursor_pos.row > 0) {
-                te->cursor_pos.row -= 1;
-                if (te->cursor_pos.col >= te->lines.items[te->cursor_pos.row].len) {
-                    te->cursor_pos.col = te->lines.items[te->cursor_pos.row].len;
+        case MOTION_FORWARD_WORD:;
+            curr_text_ptr = &te->lines.items[p.row].text[p.col];
+            ptr = &te->lines.text[te->lines.text_len-1]; // set to the end text ptr
+            while (curr_text_ptr != ptr && *curr_text_ptr == ' ') curr_text_ptr++;  // move to the word begin
+            while (curr_text_ptr != ptr && *curr_text_ptr != ' ') curr_text_ptr++;  // move to the word end
+            ted_move_cursor_to_ptr(te, curr_text_ptr+1);
+            return;
+
+        case MOTION_BACKWARD_WORD:;
+            curr_text_ptr = &te->lines.items[p.row].text[p.col];
+            ptr = te->lines.text-1; // set to the begin text ptr
+            if (curr_text_ptr[-1] == ' ') curr_text_ptr--;
+            while (curr_text_ptr != ptr && *curr_text_ptr == ' ') curr_text_ptr--; // move to the word end
+            while (curr_text_ptr != ptr && *curr_text_ptr != ' ') curr_text_ptr--; // move to the word begin
+            ted_move_cursor_to_ptr(te, curr_text_ptr+1);
+            return;
+
+        case MOTION_UP:
+            if (p.row > 0) {
+                p.row -= 1;
+                if (p.col >= te->lines.items[p.row].len) {
+                    p.col = te->lines.items[p.row].len;
                 }
             }
             break;
 
-        case DIR_DOWN:
-            if (te->cursor_pos.row+1 < te->lines.len) {
-                te->cursor_pos.row += 1;
-                if (te->cursor_pos.col >= te->lines.items[te->cursor_pos.row].len) {
-                    te->cursor_pos.col = te->lines.items[te->cursor_pos.row].len;
+        case MOTION_DOWN:
+            if (p.row+1 < te->lines.len) {
+                p.row += 1;
+                if (p.col >= te->lines.items[p.row].len) {
+                    p.col = te->lines.items[p.row].len;
                 }
             }
             break;
+
+        default: assert(0 && "not yet implemented");
     }
+
+    te->cursor_pos = p;
 }
 
 bool ted_insert_symbol(TextEditor *te, int symbol)
@@ -511,13 +540,17 @@ int gui_thread(char *chat_id)
     SetTargetFPS(60);
     while (!WindowShouldClose()) {
         if (KEYMAP_MOVE_FORWARD) {
-            ted_try_move_cursor(&tpilot.editor, DIR_FORWARD);
+            ted_try_move_cursor(&tpilot.editor, MOTION_FORWARD);
         } else if (KEYMAP_MOVE_BACKWARD) {
-            ted_try_move_cursor(&tpilot.editor, DIR_BACKWARD);
+            ted_try_move_cursor(&tpilot.editor, MOTION_BACKWARD);
+        } else if (KEYMAP_MOVE_FORWARD_WORD) {
+            ted_try_move_cursor(&tpilot.editor, MOTION_FORWARD_WORD);
+        } else if (KEYMAP_MOVE_BACKWARD_WORD) {
+            ted_try_move_cursor(&tpilot.editor, MOTION_BACKWARD_WORD);
         } else if (KEYMAP_MOVE_UP) {
-            ted_try_move_cursor(&tpilot.editor, DIR_UP);
+            ted_try_move_cursor(&tpilot.editor, MOTION_UP);
         } else if (KEYMAP_MOVE_DOWN) {
-            ted_try_move_cursor(&tpilot.editor, DIR_DOWN);
+            ted_try_move_cursor(&tpilot.editor, MOTION_DOWN);
         } else if (tpilot.editor.lines.text_len > 0 && KEYMAP_DELETE) {
             ted_delete_symbol(&tpilot.editor);
         } else if (IsKeyReleased(KEY_ENTER) && tpilot.editor.lines.text_len > 0) {
