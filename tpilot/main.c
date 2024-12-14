@@ -51,15 +51,21 @@
 #   define KEYMAP_MOVE_FORWARD  (IsKeyDown(KEY_LEFT_CONTROL) && KEY(F))
 #   define KEYMAP_MOVE_BACKWARD (IsKeyDown(KEY_LEFT_CONTROL) && KEY(B))
 #   define KEYMAP_DELETE        (IsKeyDown(KEY_LEFT_CONTROL) && KEY(H))
+#   define KEYMAP_MOVE_UP       (IsKeyDown(KEY_LEFT_CONTROL) && KEY(P))
+#   define KEYMAP_MOVE_DOWN     (IsKeyDown(KEY_LEFT_CONTROL) && KEY(N))
 #else
 #   define KEYMAP_MOVE_FORWARD  (KEY(RIGHT))
 #   define KEYMAP_MOVE_BACKWARD (KEY(LEFT))
 #   define KEYMAP_DELETE        (KEY(BACKSPACE))
+#   define KEYMAP_MOVE_UP       (KEY(UP))
+#   define KEYMAP_MOVE_DOWN     (KEY(DOWN))
 #endif
 
 typedef enum {
     DIR_FORWARD,
     DIR_BACKWARD,
+    DIR_UP,
+    DIR_DOWN,
 } Direction;
 
 typedef struct {
@@ -393,7 +399,7 @@ void ted_try_move_cursor(TextEditor *te, Direction dir)
             if (te->cursor_pos.col == 0) {
                 if (te->cursor_pos.row > 0) {
                     te->cursor_pos.row -= 1;
-                    te->cursor_pos.col = te->lines.items[te->cursor_pos.row].len-1;
+                    te->cursor_pos.col = te->lines.items[te->cursor_pos.row].len;
                 }
             } else {
                 te->cursor_pos.col -= 1;
@@ -408,6 +414,24 @@ void ted_try_move_cursor(TextEditor *te, Direction dir)
                 }
             } else {
                 te->cursor_pos.col += 1;
+            }
+            break;
+
+        case DIR_UP:
+            if (te->cursor_pos.row > 0) {
+                te->cursor_pos.row -= 1;
+                if (te->cursor_pos.col >= te->lines.items[te->cursor_pos.row].len) {
+                    te->cursor_pos.col = te->lines.items[te->cursor_pos.row].len;
+                }
+            }
+            break;
+
+        case DIR_DOWN:
+            if (te->cursor_pos.row+1 < te->lines.len) {
+                te->cursor_pos.row += 1;
+                if (te->cursor_pos.col >= te->lines.items[te->cursor_pos.row].len) {
+                    te->cursor_pos.col = te->lines.items[te->cursor_pos.row].len;
+                }
             }
             break;
     }
@@ -490,6 +514,10 @@ int gui_thread(char *chat_id)
             ted_try_move_cursor(&tpilot.editor, DIR_FORWARD);
         } else if (KEYMAP_MOVE_BACKWARD) {
             ted_try_move_cursor(&tpilot.editor, DIR_BACKWARD);
+        } else if (KEYMAP_MOVE_UP) {
+            ted_try_move_cursor(&tpilot.editor, DIR_UP);
+        } else if (KEYMAP_MOVE_DOWN) {
+            ted_try_move_cursor(&tpilot.editor, DIR_DOWN);
         } else if (tpilot.editor.lines.text_len > 0 && KEYMAP_DELETE) {
             ted_delete_symbol(&tpilot.editor);
         } else if (IsKeyReleased(KEY_ENTER) && tpilot.editor.lines.text_len > 0) {
