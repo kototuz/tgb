@@ -40,11 +40,32 @@
 
 #define TED_BG_COLOR     MSG_BG_COLOR
 #define TED_FG_COLOR     WHITE
+#define TED_CURSOR_CODE  L'▏'
 #define TED_CURSOR_COLOR WHITE
 
+#define EMACS_KEYMAP
+
+// mappings
+#define KEY(k) (IsKeyPressed(KEY_ ## k) || IsKeyPressedRepeat(KEY_ ## k))
+#ifdef EMACS_KEYMAP
+#   define KEYMAP_MOVE_FORWARD  (IsKeyDown(KEY_LEFT_CONTROL) && KEY(F))
+#   define KEYMAP_MOVE_BACKWARD (IsKeyDown(KEY_LEFT_CONTROL) && KEY(B))
+#   define KEYMAP_DELETE        (IsKeyDown(KEY_LEFT_CONTROL) && KEY(H))
+#else
+#   define KEYMAP_MOVE_FORWARD  (KEY(RIGHT))
+#   define KEYMAP_MOVE_BACKWARD (KEY(LEFT))
+#   define KEYMAP_DELETE        (KEY(BACKSPACE))
+#endif
+
+typedef enum {
+    DIR_FORWARD,
+    DIR_BACKWARD,
+} Direction;
+
 typedef struct {
-    const int *text;
+    int *text;
     size_t len;
+    size_t trim_whitespace_count;
 } Line;
 
 typedef struct {
@@ -55,10 +76,16 @@ typedef struct {
     size_t cap;
 } Lines;
 
+typedef struct {
+    size_t col;
+    size_t row;
+} TextEditorPos;
+
 #define MAX_MSG_LEN 4096
 typedef struct {
     Lines lines;
-    Vector2 cursor_pos;
+    TextEditorPos cursor_pos;
+    size_t max_line_len;
 } TextEditor;
 
 typedef struct {
@@ -120,51 +147,6 @@ Size calc_text_block_size(
     return size;
 }
 
-
-Tpilot tpilot_new()
-{
-    Tpilot tpilot = {0};
-
-    tpilot.font = LoadFontEx(
-            FONT_PATH, FONT_SIZE,
-            0, FONT_GLYPH_COUNT);
-
-    // glyph_width mustn't change because we use monospaced font
-    tpilot.glyph_width =
-        FONT_SIZE / tpilot.font.baseSize * tpilot.font.glyphs[0].advanceX;
-
-    tpilot.max_msg_line_len =
-        floor((WIDTH-2*MSG_TEXT_PADDING-2*MSG_TEXT_MARGIN) / tpilot.glyph_width);
-
-    INFO(L"Max msg line length: %zu\n", tpilot.max_msg_line_len);
-
-    // TODO: maybe 'cursor_pos' is redundant
-    tpilot.editor.cursor_pos.y = HEIGHT - FONT_SIZE;
-
-    static int ted_buffer[4096];
-    tpilot.editor.lines = (Lines){ .text = ted_buffer };
-
-    return tpilot;
-}
-
-void tpilot_draw_text(
-        Tpilot *self,
-        Vector2 pos,
-        Lines lines,
-        Color color)
-{
-    size_t begin_x = pos.x;
-    for (size_t i = 0; i < lines.len; i++) {
-        DrawTextCodepoints(
-                self->font,
-                lines.items[i].text,
-                lines.items[i].len,
-                pos, FONT_SIZE, SPACING, color);
-        pos.y += FONT_SIZE;
-        pos.x = begin_x;
-    }
-}
-
 bool grow_line(Lines *lines)
 {
     if (lines->len < lines->cap) {
@@ -192,6 +174,52 @@ bool grow_line(Lines *lines)
     return true;
 }
 
+Tpilot tpilot_new()
+{
+    Tpilot tpilot = {0};
+
+    tpilot.font = LoadFontEx(
+            FONT_PATH, FONT_SIZE,
+            0, FONT_GLYPH_COUNT);
+
+    // glyph_width mustn't change because we use monospaced font
+    tpilot.glyph_width =
+        FONT_SIZE / tpilot.font.baseSize * tpilot.font.glyphs[0].advanceX;
+
+    tpilot.max_msg_line_len =
+        floor((WIDTH-2*MSG_TEXT_PADDING-2*MSG_TEXT_MARGIN) / tpilot.glyph_width);
+
+    INFO(L"Max msg line length: %zu\n", tpilot.max_msg_line_len);
+
+    static int ted_buffer[4096];
+    tpilot.editor.lines = (Lines){ .text = ted_buffer };
+    grow_line(&tpilot.editor.lines);
+    tpilot.editor.lines.items[0].text = ted_buffer;
+    tpilot.editor.lines.items[0].len = 0;
+
+    tpilot.editor.max_line_len = floor(WIDTH/tpilot.glyph_width); 
+
+    return tpilot;
+}
+
+void tpilot_draw_text(
+        Tpilot *self,
+        Vector2 pos,
+        Lines lines,
+        Color color)
+{
+    size_t begin_x = pos.x;
+    for (size_t i = 0; i < lines.len; i++) {
+        DrawTextCodepoints(
+                self->font,
+                lines.items[i].text,
+                lines.items[i].len,
+                pos, FONT_SIZE, SPACING, color);
+        pos.y += FONT_SIZE;
+        pos.x = begin_x;
+    }
+}
+
 bool recalc_lines(Lines *lines, size_t max_line)
 {
     // clear all lines
@@ -206,6 +234,7 @@ bool recalc_lines(Lines *lines, size_t max_line)
         if (curr_line->len+1 > max_line) {
             if (lines->text[i] == ' ') {
                 do {
+                    curr_line->trim_whitespace_count += 1;
                     if (++i >= lines->text_len) return true;
                 } while (lines->text[i] == ' ');
                 if (!grow_line(lines)) return false;
@@ -281,6 +310,16 @@ void tpilot_render(Tpilot self)
                 widget_pos,
                 self.editor.lines,
                 TED_FG_COLOR);
+
+        // render cursor
+        Vector2 cursor_pos = {
+            self.editor.cursor_pos.col*self.glyph_width+1,
+            widget_pos.y + self.editor.cursor_pos.row*FONT_SIZE
+        };
+        DrawTextCodepoint(
+                self.font, TED_CURSOR_CODE,
+                cursor_pos, FONT_SIZE,
+                TED_CURSOR_COLOR);
     }
 
     { // render messages
@@ -323,6 +362,92 @@ void tpilot_render(Tpilot self)
     }
 }
 
+bool ted_update(TextEditor *te)
+{
+    return recalc_lines(&te->lines, te->max_line_len);
+}
+
+void ted_move_cursor_to_ptr(TextEditor *te, int *ptr)
+{
+    TextEditorPos pos = { te->cursor_pos.row > 0 ? te->cursor_pos.row-1 : 0, 0 };
+    Line line = te->lines.items[pos.row];
+    size_t real_line_len = line.len + line.trim_whitespace_count;
+    while (&line.text[pos.col] != ptr) {
+        if (pos.col >= real_line_len) {
+            if (++pos.row >= te->lines.len) return;
+            line = te->lines.items[pos.row];
+            real_line_len = line.len + line.trim_whitespace_count;
+            pos.col = 0;
+        } else {
+            pos.col += 1;
+        }
+    }
+
+    te->cursor_pos = pos;
+}
+
+void ted_try_move_cursor(TextEditor *te, Direction dir)
+{
+    switch (dir) {
+        case DIR_BACKWARD:
+            if (te->cursor_pos.col == 0) {
+                if (te->cursor_pos.row > 0) {
+                    te->cursor_pos.row -= 1;
+                    te->cursor_pos.col = te->lines.items[te->cursor_pos.row].len-1;
+                }
+            } else {
+                te->cursor_pos.col -= 1;
+            }
+            break;
+
+        case DIR_FORWARD:
+            if (te->cursor_pos.col == te->lines.items[te->cursor_pos.row].len) {
+                if (te->cursor_pos.row+1 < te->lines.len) {
+                    te->cursor_pos.row += 1;
+                    te->cursor_pos.col = 0;
+                }
+            } else {
+                te->cursor_pos.col += 1;
+            }
+            break;
+    }
+}
+
+bool ted_insert_symbol(TextEditor *te, int symbol)
+{
+    if (te->lines.text_len+1 >= MAX_MSG_LEN) return true;
+
+    // move text after cursor
+    int *text_curr_ptr = &te->lines.items[te->cursor_pos.row].text[te->cursor_pos.col];
+    int *text_end_ptr = &te->lines.text[te->lines.text_len];
+    size_t size = (text_end_ptr - text_curr_ptr) * sizeof(int);
+    memmove(text_curr_ptr+1, text_curr_ptr, size);
+
+    *text_curr_ptr = symbol;
+    te->lines.text_len += 1;
+
+    if (!recalc_lines(&te->lines, te->max_line_len)) return false;
+    ted_move_cursor_to_ptr(te, text_curr_ptr+1);
+
+    return true;
+}
+
+bool ted_delete_symbol(TextEditor *te)
+{
+    // move text after cursor
+    int *text_curr_ptr = &te->lines.items[te->cursor_pos.row].text[te->cursor_pos.col];
+    int *text_end_ptr = &te->lines.text[te->lines.text_len];
+    size_t size = (text_end_ptr - text_curr_ptr) * sizeof(int);
+    memmove(text_curr_ptr-1, text_curr_ptr, size);
+
+    te->lines.text_len -= 1;
+
+    if (!recalc_lines(&te->lines, te->max_line_len)) return false;
+    ted_move_cursor_to_ptr(te, text_curr_ptr-1);
+
+    return true;
+}
+
 size_t empty_read(char *b, size_t s, size_t n, void *ud) {(void) b; (void) ud; return s*n; }
 int gui_thread(char *chat_id)
 {
@@ -358,72 +483,60 @@ int gui_thread(char *chat_id)
 
     ByteBuffer buffer = {0};
     Tpilot tpilot = tpilot_new();
-    size_t max_editor_line_len = floor(WIDTH/tpilot.glyph_width);
 
+    SetTargetFPS(60);
     while (!WindowShouldClose()) {
-        int key = GetKeyPressed();
-        switch (key) {
-            case KEY_ENTER:
-                if (tpilot.editor.lines.text_len == 0) break;
+        if (KEYMAP_MOVE_FORWARD) {
+            ted_try_move_cursor(&tpilot.editor, DIR_FORWARD);
+        } else if (KEYMAP_MOVE_BACKWARD) {
+            ted_try_move_cursor(&tpilot.editor, DIR_BACKWARD);
+        } else if (tpilot.editor.lines.text_len > 0 && KEYMAP_DELETE) {
+            ted_delete_symbol(&tpilot.editor);
+        } else if (IsKeyReleased(KEY_ENTER) && tpilot.editor.lines.text_len > 0) {
+            // render message on client
+            tpilot_push_message(
+                    &tpilot,
+                    tpilot.editor.lines.text,
+                    tpilot.editor.lines.text_len,
+                    (WStr)WS_LIT(L"You"));
 
-                // render message on client
-                tpilot_push_message(
-                        &tpilot,
-                        tpilot.editor.lines.text,
-                        tpilot.editor.lines.text_len,
-                        (WStr)WS_LIT(L"You"));
-
-                if (!url_append_field(
+            if (!url_append_field(
                         url, &buffer,
                         SV("chat_id"),
                         sv_from_cstr(chat_id))) return 1;
 
-                char *editor_text_utf8 =
-                    LoadUTF8(tpilot.editor.lines.text, tpilot.editor.lines.text_len);
-                if (!url_append_field(
+            char *editor_text_utf8 =
+                LoadUTF8(tpilot.editor.lines.text, tpilot.editor.lines.text_len);
+            if (!url_append_field(
                         url, &buffer,
                         SV("text"),
                         sv_from_cstr(editor_text_utf8))) return 1;
-                UnloadUTF8(editor_text_utf8);
+            UnloadUTF8(editor_text_utf8);
 
-                // get result
-                char *data;
-                curlu_err = curl_url_get(url, CURLUPART_URL, &data, 0);
-                if (curlu_err != CURLUE_OK) CURLU_ERR(curlu_err);
+            // get result
+            char *data;
+            curlu_err = curl_url_get(url, CURLUPART_URL, &data, 0);
+            if (curlu_err != CURLUE_OK) CURLU_ERR(curlu_err);
 
-                // send message
-                curl_easy_setopt(curl_sender, CURLOPT_URL, data);
-                curl_err = curl_easy_perform(curl_sender);
-                if (curl_err != CURLE_OK) CURL_PERFORM_ERR(curl_err);
+            // send message
+            curl_easy_setopt(curl_sender, CURLOPT_URL, data);
+            curl_err = curl_easy_perform(curl_sender);
+            if (curl_err != CURLE_OK) CURL_PERFORM_ERR(curl_err);
 
-                // clear the editor buffer
-                tpilot.editor.lines.text_len = 0;
-                tpilot.editor.lines.len = 0;
+            // clear the editor buffer
+            tpilot.editor.lines.text_len = 0;
+            tpilot.editor.lines.len = 0;
+            tpilot.editor.cursor_pos = (TextEditorPos){0};
 
-                // clear 'url' buffer
-                curlu_err = curl_url_set(url, CURLUPART_QUERY, NULL, 0);
-                if (curlu_err != CURLUE_OK) CURLU_ERR(curlu_err);
-                curl_free(data);
-
-                break;
-
-            case KEY_BACKSPACE:
-                if (tpilot.editor.lines.text_len == 0) break;
-                tpilot.editor.lines.text_len -= 1;
-                if (!recalc_lines(
-                            &tpilot.editor.lines,
-                            max_editor_line_len)) return 1;
-                break;
-
-            default:
-                key = GetCharPressed();
-                if (key != 0) {
-                    tpilot.editor.lines.text[tpilot.editor.lines.text_len++] = key;
-                    if (!recalc_lines(&tpilot.editor.lines, max_editor_line_len))
-                        return 1;
-
-                }
-                break;
+            // clear 'url' buffer
+            curlu_err = curl_url_set(url, CURLUPART_QUERY, NULL, 0);
+            if (curlu_err != CURLUE_OK) CURLU_ERR(curlu_err);
+            curl_free(data);
+        } else { // insert char
+            int symbol = GetCharPressed();
+            if (symbol != 0) {
+                ted_insert_symbol(&tpilot.editor, symbol);
+            }
         }
 
         // handle input message if it appears
@@ -535,5 +648,3 @@ int main(int argc, char *argv[])
         }
     }
 }
-
-// TODO: cursor movements and editing
