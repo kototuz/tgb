@@ -57,6 +57,8 @@
 #   define KEYMAP_MOVE_DOWN          (IsKeyDown(KEY_LEFT_CONTROL) && KEY(N))
 #   define KEYMAP_MOVE_END           (IsKeyDown(KEY_LEFT_CONTROL) && KEY(E))
 #   define KEYMAP_MOVE_BEGIN         (IsKeyDown(KEY_LEFT_CONTROL) && KEY(A))
+#   define KEYMAP_DELETE_WORD        (IsKeyDown(KEY_LEFT_CONTROL) && KEY(W))
+#   define KEYMAP_DELETE_LINE        (IsKeyDown(KEY_LEFT_CONTROL) && KEY(U))
 #else
 #   define KEYMAP_MOVE_FORWARD       (KEY(RIGHT))
 #   define KEYMAP_MOVE_BACKWARD      (KEY(LEFT))
@@ -67,6 +69,8 @@
 #   define KEYMAP_MOVE_DOWN          (KEY(DOWN))
 #   define KEYMAP_MOVE_END           (KEY(HOME))
 #   define KEYMAP_MOVE_BEGIN         (KEY(END))
+#   define KEYMAP_DELETE_WORD        (IsKeyDown(KEY_LEFT_CONTROL) && KEY(BACKSPACE))
+#   define KEYMAP_DELETE_LINE        (false)
 #endif
 
 typedef enum {
@@ -404,7 +408,7 @@ void ted_move_cursor_to_ptr(TextEditor *te, int *ptr)
     te->cursor_pos = pos;
 }
 
-void ted_try_move_cursor(TextEditor *te, Motion dir)
+void ted_try_cursor_motion(TextEditor *te, Motion dir)
 {
     TextEditorPos p = te->cursor_pos;
     int *curr_text_ptr, *ptr;
@@ -473,6 +477,8 @@ void ted_try_move_cursor(TextEditor *te, Motion dir)
         case MOTION_END:
             p.col = te->lines.items[p.row].len;
             break;
+
+        default: assert(0 && "not yet implemented");
     }
 
     te->cursor_pos = p;
@@ -497,6 +503,22 @@ bool ted_insert_symbol(TextEditor *te, int symbol)
     return true;
 }
 
+bool ted_delete_symbols(TextEditor *te, size_t count)
+{
+    int *text_curr_ptr = &te->lines.items[te->cursor_pos.row].text[te->cursor_pos.col];
+    int *text_end_ptr = &te->lines.text[te->lines.text_len];
+    size_t size = (text_end_ptr - text_curr_ptr) * sizeof(int);
+
+    int *new_curr_text_ptr = text_curr_ptr - count;
+    memmove(new_curr_text_ptr, text_curr_ptr, size);
+    te->lines.text_len -= text_curr_ptr - new_curr_text_ptr;
+
+    if (!recalc_lines(&te->lines, te->max_line_len)) return false;
+    ted_move_cursor_to_ptr(te, new_curr_text_ptr);
+
+    return true;
+}
+
 bool ted_delete_symbol(TextEditor *te)
 {
     // move text after cursor
@@ -511,6 +533,32 @@ bool ted_delete_symbol(TextEditor *te)
     ted_move_cursor_to_ptr(te, text_curr_ptr-1);
 
     return true;
+}
+
+bool ted_delete_word(TextEditor *te)
+{
+    int *begin_text_ptr = te->lines.text;
+    int *curr_text_ptr = &te->lines.items[te->cursor_pos.row].text[te->cursor_pos.col];
+    int *new_curr_text_ptr = curr_text_ptr;
+    if (new_curr_text_ptr[-1] == ' ') new_curr_text_ptr--;
+    while (new_curr_text_ptr != begin_text_ptr && *new_curr_text_ptr == ' ') new_curr_text_ptr--; // move to the word end
+    while (new_curr_text_ptr != begin_text_ptr) {
+        if (*new_curr_text_ptr == ' ') {
+            new_curr_text_ptr += 1;
+            break;
+        } else {
+            new_curr_text_ptr--;
+        }
+    }
+
+    return ted_delete_symbols(te, curr_text_ptr - new_curr_text_ptr);
+}
+
+bool ted_delete_line(TextEditor *te)
+{
+    int *curr_text_ptr = &te->lines.items[te->cursor_pos.row].text[te->cursor_pos.col];
+    int *new_text_ptr = te->lines.items[te->cursor_pos.row].text;
+    return ted_delete_symbols(te, curr_text_ptr - new_text_ptr);
 }
 
 size_t empty_read(char *b, size_t s, size_t n, void *ud) {(void) b; (void) ud; return s*n; }
@@ -552,23 +600,27 @@ int gui_thread(char *chat_id)
     SetTargetFPS(60);
     while (!WindowShouldClose()) {
         if (KEYMAP_MOVE_FORWARD) {
-            ted_try_move_cursor(&tpilot.editor, MOTION_FORWARD);
+            ted_try_cursor_motion(&tpilot.editor, MOTION_FORWARD);
         } else if (KEYMAP_MOVE_BACKWARD) {
-            ted_try_move_cursor(&tpilot.editor, MOTION_BACKWARD);
+            ted_try_cursor_motion(&tpilot.editor, MOTION_BACKWARD);
         } else if (KEYMAP_MOVE_FORWARD_WORD) {
-            ted_try_move_cursor(&tpilot.editor, MOTION_FORWARD_WORD);
+            ted_try_cursor_motion(&tpilot.editor, MOTION_FORWARD_WORD);
         } else if (KEYMAP_MOVE_BACKWARD_WORD) {
-            ted_try_move_cursor(&tpilot.editor, MOTION_BACKWARD_WORD);
+            ted_try_cursor_motion(&tpilot.editor, MOTION_BACKWARD_WORD);
         } else if (KEYMAP_MOVE_UP) {
-            ted_try_move_cursor(&tpilot.editor, MOTION_UP);
+            ted_try_cursor_motion(&tpilot.editor, MOTION_UP);
         } else if (KEYMAP_MOVE_DOWN) {
-            ted_try_move_cursor(&tpilot.editor, MOTION_DOWN);
+            ted_try_cursor_motion(&tpilot.editor, MOTION_DOWN);
         } else if (KEYMAP_MOVE_END) {
-            ted_try_move_cursor(&tpilot.editor, MOTION_END);
+            ted_try_cursor_motion(&tpilot.editor, MOTION_END);
         } else if (KEYMAP_MOVE_BEGIN) {
-            ted_try_move_cursor(&tpilot.editor, MOTION_BEGIN);
+            ted_try_cursor_motion(&tpilot.editor, MOTION_BEGIN);
+        } else if (KEYMAP_DELETE_WORD) {
+            if (!ted_delete_word(&tpilot.editor)) return 1;
+        } else if (KEYMAP_DELETE_LINE) {
+            if (!ted_delete_line(&tpilot.editor)) return 1;
         } else if (tpilot.editor.lines.text_len > 0 && KEYMAP_DELETE) {
-            ted_delete_symbol(&tpilot.editor);
+            if (!ted_delete_symbol(&tpilot.editor)) return 1;
         } else if (IsKeyReleased(KEY_ENTER) && tpilot.editor.lines.text_len > 0) {
             // render message on client
             tpilot_push_message(
