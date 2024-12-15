@@ -59,6 +59,7 @@
 #   define KEYMAP_MOVE_BEGIN         (IsKeyDown(KEY_LEFT_CONTROL) && KEY(A))
 #   define KEYMAP_DELETE_WORD        (IsKeyDown(KEY_LEFT_CONTROL) && KEY(W))
 #   define KEYMAP_DELETE_LINE        (IsKeyDown(KEY_LEFT_CONTROL) && KEY(U))
+#   define KEYMAP_SEND_MESSAGE       (IsKeyDown(KEY_LEFT_CONTROL) && IsKeyPressed(KEY_J))
 #else
 #   define KEYMAP_MOVE_FORWARD       (KEY(RIGHT))
 #   define KEYMAP_MOVE_BACKWARD      (KEY(LEFT))
@@ -71,6 +72,7 @@
 #   define KEYMAP_MOVE_BEGIN         (KEY(END))
 #   define KEYMAP_DELETE_WORD        (IsKeyDown(KEY_LEFT_CONTROL) && KEY(BACKSPACE))
 #   define KEYMAP_DELETE_LINE        (false)
+#   define KEYMAP_SEND_MESSAGE       (IsKeyPressed(KEY_ENTER))
 #endif
 
 typedef enum {
@@ -621,7 +623,7 @@ int gui_thread(char *chat_id)
             if (!ted_delete_line(&tpilot.editor)) return 1;
         } else if (tpilot.editor.lines.text_len > 0 && KEYMAP_DELETE) {
             if (!ted_delete_symbol(&tpilot.editor)) return 1;
-        } else if (IsKeyReleased(KEY_ENTER) && tpilot.editor.lines.text_len > 0) {
+        } else if (KEYMAP_SEND_MESSAGE && tpilot.editor.lines.text_len > 0) {
             // render message on client
             tpilot_push_message(
                     &tpilot,
