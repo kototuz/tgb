@@ -55,6 +55,8 @@
 #   define KEYMAP_DELETE             (IsKeyDown(KEY_LEFT_CONTROL) && KEY(H))
 #   define KEYMAP_MOVE_UP            (IsKeyDown(KEY_LEFT_CONTROL) && KEY(P))
 #   define KEYMAP_MOVE_DOWN          (IsKeyDown(KEY_LEFT_CONTROL) && KEY(N))
+#   define KEYMAP_MOVE_END           (IsKeyDown(KEY_LEFT_CONTROL) && KEY(E))
+#   define KEYMAP_MOVE_BEGIN         (IsKeyDown(KEY_LEFT_CONTROL) && KEY(A))
 #else
 #   define KEYMAP_MOVE_FORWARD       (KEY(RIGHT))
 #   define KEYMAP_MOVE_BACKWARD      (KEY(LEFT))
@@ -63,6 +65,8 @@
 #   define KEYMAP_DELETE             (KEY(BACKSPACE))
 #   define KEYMAP_MOVE_UP            (KEY(UP))
 #   define KEYMAP_MOVE_DOWN          (KEY(DOWN))
+#   define KEYMAP_MOVE_END           (KEY(HOME))
+#   define KEYMAP_MOVE_BEGIN         (KEY(END))
 #endif
 
 typedef enum {
@@ -72,6 +76,8 @@ typedef enum {
     MOTION_BACKWARD,
     MOTION_UP,
     MOTION_DOWN,
+    MOTION_END,
+    MOTION_BEGIN,
 } Motion;
 
 typedef struct {
@@ -460,7 +466,13 @@ void ted_try_move_cursor(TextEditor *te, Motion dir)
             }
             break;
 
-        default: assert(0 && "not yet implemented");
+        case MOTION_BEGIN:
+            p.col = 0;
+            break;
+
+        case MOTION_END:
+            p.col = te->lines.items[p.row].len;
+            break;
     }
 
     te->cursor_pos = p;
@@ -551,6 +563,10 @@ int gui_thread(char *chat_id)
             ted_try_move_cursor(&tpilot.editor, MOTION_UP);
         } else if (KEYMAP_MOVE_DOWN) {
             ted_try_move_cursor(&tpilot.editor, MOTION_DOWN);
+        } else if (KEYMAP_MOVE_END) {
+            ted_try_move_cursor(&tpilot.editor, MOTION_END);
+        } else if (KEYMAP_MOVE_BEGIN) {
+            ted_try_move_cursor(&tpilot.editor, MOTION_BEGIN);
         } else if (tpilot.editor.lines.text_len > 0 && KEYMAP_DELETE) {
             ted_delete_symbol(&tpilot.editor);
         } else if (IsKeyReleased(KEY_ENTER) && tpilot.editor.lines.text_len > 0) {
